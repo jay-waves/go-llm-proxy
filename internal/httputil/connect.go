@@ -25,7 +25,10 @@ const (
 
 	// HeaderApplication and HeaderFor are the hub's optional request labels.
 	HeaderApplication = "X-Eidonix-Application"
-	HeaderFor         = "X-Eidonix-For"
+	// HeaderApplicationKey authenticates the application to a hub that has
+	// per-application keys configured.
+	HeaderApplicationKey = "X-Eidonix-Application-Key"
+	HeaderFor            = "X-Eidonix-For"
 	// HeaderError carries the hub's error code on its JSON error replies.
 	HeaderError = "X-Eidonix-Error"
 
@@ -37,9 +40,13 @@ const (
 type ConnectSettings struct {
 	URL         string // hub base URL, no trailing slash
 	Application string // sent as X-Eidonix-Application
+	Key         string // sent as X-Eidonix-Application-Key; empty = none
 }
 
-var connectCfg atomic.Pointer[ConnectSettings]
+var (
+	connectCfg atomic.Pointer[ConnectSettings]
+	connectKey atomic.Pointer[string]
+)
 
 func init() { SetConnect("", "") }
 
@@ -57,8 +64,18 @@ func SetConnect(hubURL, application string) {
 	connectCfg.Store(&ConnectSettings{URL: hubURL, Application: application})
 }
 
+// SetConnectKey installs the application key sent to the hub (empty = none).
+// Safe to call at any time, e.g. on every config reload.
+func SetConnectKey(key string) { connectKey.Store(&key) }
+
 // Connect returns the current hub settings.
-func Connect() ConnectSettings { return *connectCfg.Load() }
+func Connect() ConnectSettings {
+	s := *connectCfg.Load()
+	if k := connectKey.Load(); k != nil {
+		s.Key = *k
+	}
+	return s
+}
 
 // IsConnectURL reports whether raw is a connect:// URL.
 func IsConnectURL(raw string) bool {
@@ -192,7 +209,13 @@ func (c *connectRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	out := req.Clone(req.Context())
 	out.URL = target
 	out.Host = target.Host
-	out.Header.Set(HeaderApplication, Connect().Application)
+	settings := Connect()
+	out.Header.Set(HeaderApplication, settings.Application)
+	if settings.Key != "" {
+		out.Header.Set(HeaderApplicationKey, settings.Key)
+	} else {
+		out.Header.Del(HeaderApplicationKey)
+	}
 	if who := SanitizeLabel(CallerFromContext(req.Context())); who != "" {
 		out.Header.Set(HeaderFor, who)
 	} else {

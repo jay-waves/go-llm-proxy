@@ -109,6 +109,11 @@ type PaddleOCRConfig struct {
 type ConnectConfig struct {
 	URL         string `yaml:"url,omitempty"`         // hub base URL (default http://connect:8080)
 	Application string `yaml:"application,omitempty"` // X-Eidonix-Application label (default go-llm-proxy)
+	// KeyFile names a file whose first line is this application's hub key
+	// (from `eidonix-connect app-key`); re-read on every reload. Key is the
+	// inline alternative, used only when KeyFile is unset.
+	KeyFile string `yaml:"key_file,omitempty"`
+	Key     string `yaml:"key,omitempty"`
 }
 
 // AutoModeConfig turns on interception of Claude Code's auto-mode classifier
@@ -202,6 +207,25 @@ func (c *Config) ConnectSettings() (hubURL, application string) {
 		app = httputil.DefaultConnectApplication
 	}
 	return strings.TrimRight(url, "/"), app
+}
+
+// ConnectKey returns the application key for the hub: the first line of
+// connect.key_file when set, otherwise connect.key. A missing or empty file
+// means no key (logged as a warning); the key itself is never logged.
+func (c *Config) ConnectKey() string {
+	if c == nil || c.Connect == nil {
+		return ""
+	}
+	if c.Connect.KeyFile == "" {
+		return strings.TrimSpace(c.Connect.Key)
+	}
+	data, err := os.ReadFile(c.Connect.KeyFile)
+	if err != nil {
+		slog.Warn("connect.key_file unreadable; sending no hub key", "path", c.Connect.KeyFile, "error", err)
+		return ""
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	return strings.TrimSpace(line)
 }
 
 // EffectiveAdminPassword returns the password guarding /admin: admin_password

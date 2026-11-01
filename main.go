@@ -115,6 +115,7 @@ func main() {
 	// Point connect:// backends at the Eidonix connect hub (defaults apply when
 	// the config has no connect block). Re-applied on every reload below.
 	httputil.SetConnect(cfg.ConnectSettings())
+	httputil.SetConnectKey(cfg.ConnectKey())
 
 	// Auto-detect context window sizes from backends (async, non-blocking).
 	config.DetectContextWindows(cs)
@@ -146,6 +147,7 @@ func main() {
 
 	cs.SetOnReload(func(newCfg *config.Config) {
 		httputil.SetConnect(newCfg.ConnectSettings())
+		httputil.SetConnectKey(newCfg.ConnectKey())
 		rl.SetTrustedProxies(newCfg.TrustedProxies)
 		healthStore.RefreshFromConfig()
 		// Re-probe all backends so a changed key/backend reflects immediately,

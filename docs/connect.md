@@ -15,9 +15,10 @@ exactly as before; `http://` and `https://` backends are untouched.
 ## Configuration
 
 ```yaml
-connect:                              # optional; both fields have defaults
+connect:                              # optional; every field has a default
   url: http://connect:8080            # the hub (default)
   application: go-llm-proxy           # sent as X-Eidonix-Application (default)
+  key_file: /run/secrets/connect_key  # this application's hub key (default: none)
 
 models:
   - name: glm
@@ -35,6 +36,17 @@ block the defaults apply.
 The proxy appends the usual request path to what follows the service, so
 `connect://site-a/chat/v1` plus `/chat/completions` reaches the site's `chat`
 service as `POST /v1/chat/completions`.
+
+### Application key
+
+A hub with per-application keys configured only serves requests that carry this
+application's key as `X-Eidonix-Application-Key`. Get the key from the hub
+administrator (`eidonix-connect app-key`) and put it in a file that only the
+proxy can read; `connect.key_file` names that file. Its first line is the key,
+and it is re-read on every config reload. An unreadable or empty file means no
+key is sent (the first case logs a warning); the key is never logged. An inline
+`connect.key` also works but is discouraged, as it puts the secret in the
+config. The key goes only to the hub, never to plain http(s) backends.
 
 ### Labels
 

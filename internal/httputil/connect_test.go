@@ -195,3 +195,45 @@ func TestConnectAffinityHeader(t *testing.T) {
 		t.Errorf("plain backend affinity header changed: %q", got)
 	}
 }
+
+func TestConnectApplicationKey(t *testing.T) {
+	rec := &hubRecorder{}
+	hub := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer hub.Close()
+	plain := &hubRecorder{}
+	other := httptest.NewServer(http.HandlerFunc(plain.handler))
+	defer other.Close()
+	SetConnect(hub.URL, "")
+	t.Cleanup(func() { SetConnect("", ""); SetConnectKey("") })
+
+	get := func(url string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		resp, err := NewHTTPClient().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	get("connect://site-a/glm/v1/models")
+	if v := rec.reqs[0].Header.Get(HeaderApplicationKey); v != "" {
+		t.Errorf("no key configured but hub saw %q", v)
+	}
+
+	SetConnectKey("secret-key")
+	get("connect://site-a/glm/v1/models")
+	get(other.URL + "/v1/models")
+	if v := rec.reqs[1].Header.Get(HeaderApplicationKey); v != "secret-key" {
+		t.Errorf("hub saw key %q", v)
+	}
+	if v := plain.reqs[0].Header.Get(HeaderApplicationKey); v != "" {
+		t.Errorf("plain backend received the key: %q", v)
+	}
+
+	SetConnectKey("")
+	get("connect://site-a/glm/v1/models")
+	if v := rec.reqs[2].Header.Get(HeaderApplicationKey); v != "" {
+		t.Errorf("cleared key still sent: %q", v)
+	}
+}

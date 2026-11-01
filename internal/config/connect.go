@@ -51,6 +51,9 @@ func FetchHubCatalog(ctx context.Context, client *http.Client, hubURL, applicati
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set(httputil.HeaderApplication, application)
+	if k := httputil.Connect().Key; k != "" {
+		req.Header.Set(httputil.HeaderApplicationKey, k)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connect hub unreachable: %w", err)

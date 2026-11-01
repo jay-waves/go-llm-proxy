@@ -14,7 +14,7 @@ go-llm-proxy is configured via a single YAML file (default: `config.yaml`). See 
 | `usage_db` | `"usage.db"` | Path to the SQLite usage database |
 | `usage_dashboard` | `false` | Enable the usage dashboard at `/usage` |
 | `usage_dashboard_password` | — | Required when dashboard is enabled. Falls back to `GO_LLM_USAGE_DASHBOARD_PASSWORD` if unset — see below |
-| `connect` | — | Optional [Eidonix connect](connect.md) hub: `url` (default `http://connect:8080`) and `application` (default `go-llm-proxy`). Backends written `connect://<site>/<service>/<path>` are reached through it |
+| `connect` | — | Optional [Eidonix connect](connect.md) hub: `url` (default `http://connect:8080`), `application` (default `go-llm-proxy`) and `key_file` (file holding the hub application key, see [connect.md](connect.md#application-key); none by default). Backends written `connect://<site>/<service>/<path>` are reached through it |
 | `health_interval` | `30` | Seconds between backend health probes. Read at startup (restart to change). Disabled backends are never probed; connect backends are judged from the hub catalog every 15 s instead |
 | `auto_mode` | — | Optional [Claude Code auto mode](claude-code.md#auto-mode) decision head: `model` (a configured model or alias with an OpenAI-compatible backend that supports `logprobs` and `continue_final_message`) and `block_probability` (default `0.5`, between 0 and 1). Absent means no interception |
 | `enrollment` | — | Optional [self-service API keys](#self-service-api-keys-enrollment): people get or replace their own key by confirming a work email |

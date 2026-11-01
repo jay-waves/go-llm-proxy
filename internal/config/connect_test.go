@@ -370,3 +370,68 @@ keys:
 		t.Fatalf("backend bridged as %q", cfg.Models[0].Backend)
 	}
 }
+
+func TestConnectKeyFile(t *testing.T) {
+	path := t.TempDir() + "/key"
+	cfg := &Config{Connect: &ConnectConfig{KeyFile: path}}
+
+	if k := cfg.ConnectKey(); k != "" {
+		t.Errorf("missing file: key %q", k)
+	}
+	if err := os.WriteFile(path, []byte("  first-key \nignored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if k := cfg.ConnectKey(); k != "first-key" {
+		t.Errorf("key = %q", k)
+	}
+	// Re-read on every call, so a config reload picks up a rotated key.
+	if err := os.WriteFile(path, []byte("second-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if k := cfg.ConnectKey(); k != "second-key" {
+		t.Errorf("after rotation key = %q", k)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if k := cfg.ConnectKey(); k != "" {
+		t.Errorf("empty file: key %q", k)
+	}
+
+	if k := (&Config{Connect: &ConnectConfig{Key: " inline "}}).ConnectKey(); k != "inline" {
+		t.Errorf("inline key = %q", k)
+	}
+	if k := (&Config{}).ConnectKey(); k != "" {
+		t.Errorf("no connect block: key %q", k)
+	}
+}
+
+func TestConnectKeyFileParsedAndReloaded(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := dir + "/key"
+	cfgPath := dir + "/config.yaml"
+	os.WriteFile(keyPath, []byte("one\n"), 0o600)
+	write := func() {
+		yaml := "keys: []\nmodels:\n  - name: m\n    backend: http://localhost:1/v1\nconnect:\n  key_file: " + keyPath + "\n"
+		if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+	cs, err := NewConfigStore(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cs.Get()
+	if cfg.Connect == nil || cfg.Connect.KeyFile != keyPath || cfg.ConnectKey() != "one" {
+		t.Fatalf("parsed connect = %+v key %q", cfg.Connect, cfg.ConnectKey())
+	}
+	os.WriteFile(keyPath, []byte("two\n"), 0o600)
+	write()
+	if err := cs.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if k := cs.Get().ConnectKey(); k != "two" {
+		t.Errorf("after reload key = %q", k)
+	}
+}

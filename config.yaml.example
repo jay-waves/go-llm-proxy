@@ -82,10 +82,13 @@ models:
 # ── Eidonix connect ────────────────────────────────────────────────────────────
 # Optional. Backends written connect://<site>/<service>/<path> are reached
 # through an eidonix-connect hub (docs/connect.md). Works anywhere a backend URL
-# does: models, audio, documents, Qdrant. Both fields below have these defaults.
+# does: models, audio, documents, Qdrant. The fields below have these defaults;
+# key_file is only needed when the hub issues per-application keys
+# (`eidonix-connect app-key`).
 # connect:
 #   url: http://connect:8080
 #   application: go-llm-proxy
+#   key_file: /run/secrets/connect_key
 #
 # Example backend:   - url: connect://site-a/chat/v1
 #
