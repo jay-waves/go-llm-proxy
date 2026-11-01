@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"go-llm-proxy/internal/auth"
 	"go-llm-proxy/internal/config"
@@ -49,7 +51,16 @@ func (h *SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "web search is not configured on this proxy")
 		return
 	}
+	keyName := ""
+	if key := auth.KeyFromContext(r.Context()); key != nil {
+		keyName = key.Name
+	}
+	started := time.Now()
 	hits, err := h.search.SearchGlobal(r.Context(), withDomains(q, req.IncludeDomains, req.ExcludeDomains))
+	// Every call is a paid provider search; log each so usage can be
+	// attributed to a key.
+	slog.Info("web search", "key", keyName, "query", q, "results", len(hits),
+		"duration_ms", time.Since(started).Milliseconds(), "error", err != nil)
 	if err != nil {
 		status := http.StatusBadGateway
 		if strings.Contains(err.Error(), "HTTP 429") {

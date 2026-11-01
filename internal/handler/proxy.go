@@ -240,6 +240,8 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// event stream (see armUntilHeaders).
 	ctx, cancel, disarmTimeout := armUntilHeaders(r.Context(), model)
 	defer cancel()
+	// One search budget for every round of this request's search loop.
+	ctx = pipeline.WithSearchBudget(ctx, 0)
 
 	upReq, err := http.NewRequestWithContext(ctx, r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {

@@ -430,6 +430,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// requestTimeout).
 	ctx, cancel, disarmTimeout := armUntilHeaders(r.Context(), model)
 	defer cancel()
+	// One search budget for every round of this request's search loop.
+	ctx = pipeline.WithSearchBudget(ctx, 0)
 
 	// Try native passthrough unless forced to translate.
 	if !h.shouldTranslate(model, "/responses") {

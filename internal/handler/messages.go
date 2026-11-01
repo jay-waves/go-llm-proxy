@@ -155,6 +155,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// requestTimeout and disarmIfStream).
 	ctx, cancel, disarmTimeout := armUntilHeaders(r.Context(), model)
 	defer cancel()
+	// One search budget for every round of this request's search loop.
+	ctx = pipeline.WithSearchBudget(ctx, pipeline.AnthropicWebSearchMaxUses(req.Tools))
 
 	// AWS Bedrock backends use the Converse API (translated from Anthropic
 	// Messages, signed with SigV4 or a Bedrock API key) instead of Chat

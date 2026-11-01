@@ -52,6 +52,11 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Web search: at most 5 searches per client request across every round of
+  the proxy's search loop (`max_uses` can lower it, not raise it; Claude Code
+  sends 8), and a round's searches run concurrently instead of one after
+  another. Calls past the limit get a "limit reached" tool result instead of
+  a provider call. `POST /v1/search` logs each search with its key name.
 - Native Responses passthrough fills in `"detail":"auto"` on `input_image`
   parts that omit it; vLLM rejected such requests with a 400.
 - The admin Detect button now reads the context window of the configured

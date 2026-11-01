@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go-llm-proxy/internal/api"
@@ -412,24 +413,33 @@ func appendMessagesToSlice(existing any, additional ...any) []any {
 	return append(result, additional...)
 }
 
-// executeSearchCalls runs Tavily for each web_search tool call and returns
-// (toolResultMessages, searchResults, hasClientToolCalls). The searchResults
-// contain structured data for each search call, used by streaming handlers
-// to emit search result blocks to clients.
+// executeSearchCalls runs the web search for each web_search tool call and
+// returns (toolResultMessages, searchResults, hasClientToolCalls). The
+// searchResults contain structured data for each search call, used by
+// streaming handlers to emit search result blocks to clients. Calls past
+// the request's search budget (see WithSearchBudget) are answered with a
+// limit message instead of searching; the searches that run go out
+// concurrently, and results keep the calls' order.
 func (p *Pipeline) executeSearchCalls(ctx context.Context, entries []config.WebSearchKeyEntry,
 	toolCalls []api.ChatChoiceToolCall) (toolResults []any, searchResults []SearchCallResult, hasClientTools bool) {
 
-	for _, tc := range toolCalls {
+	type pending struct {
+		call   api.ChatChoiceToolCall
+		query  string
+		run    bool
+		result string
+		hits   []SearchHit
+		err    error
+	}
+	budget := searchBudgetFrom(ctx)
+	calls := make([]*pending, len(toolCalls))
+	for i, tc := range toolCalls {
+		c := &pending{call: tc}
+		calls[i] = c
 		if tc.Function.Name != webSearchFunctionName {
 			hasClientTools = true
-			toolResults = append(toolResults, map[string]any{
-				"role":         "tool",
-				"tool_call_id": tc.ID,
-				"content":      "[This tool call has not been executed yet. Re-request it if you still need the result.]",
-			})
 			continue
 		}
-
 		var args struct {
 			Query string `json:"query"`
 		}
@@ -437,20 +447,51 @@ func (p *Pipeline) executeSearchCalls(ctx context.Context, entries []config.WebS
 			slog.Warn("failed to parse web_search arguments", "error", err, "raw", tc.Function.Arguments)
 			args.Query = tc.Function.Arguments // best-effort fallback
 		}
+		c.query = args.Query
+		if !budget.take() {
+			slog.Info("web search limit reached", "limit", MaxSearchesPerRequest, "query", c.query)
+			c.result = searchLimitText
+			continue
+		}
+		c.run = true
+	}
 
-		result, hits, err := p.executeWebSearchCascade(ctx, entries, args.Query)
-		scr := SearchCallResult{ToolUseID: tc.ID, Query: args.Query, Hits: hits}
-		if err != nil {
-			slog.Warn("web search failed", "query", args.Query, "error", err)
-			result = fmt.Sprintf("Web search failed: %s", err.Error())
-			scr.Error = err.Error()
+	var wg sync.WaitGroup
+	for _, c := range calls {
+		if !c.run {
+			continue
+		}
+		wg.Add(1)
+		go func(c *pending) {
+			defer wg.Done()
+			c.result, c.hits, c.err = p.executeWebSearchCascade(ctx, entries, c.query)
+		}(c)
+	}
+	wg.Wait()
+
+	for _, c := range calls {
+		if c.call.Function.Name != webSearchFunctionName {
+			toolResults = append(toolResults, map[string]any{
+				"role":         "tool",
+				"tool_call_id": c.call.ID,
+				"content":      "[This tool call has not been executed yet. Re-request it if you still need the result.]",
+			})
+			continue
+		}
+		scr := SearchCallResult{ToolUseID: c.call.ID, Query: c.query, Hits: c.hits}
+		switch {
+		case !c.run:
+			scr.Error = "max_uses_exceeded"
+		case c.err != nil:
+			slog.Warn("web search failed", "query", c.query, "error", c.err)
+			c.result = fmt.Sprintf("Web search failed: %s", c.err.Error())
+			scr.Error = c.err.Error()
 		}
 		searchResults = append(searchResults, scr)
-
 		toolResults = append(toolResults, map[string]any{
 			"role":         "tool",
-			"tool_call_id": tc.ID,
-			"content":      result,
+			"tool_call_id": c.call.ID,
+			"content":      c.result,
 		})
 	}
 	return
