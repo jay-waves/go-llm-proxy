@@ -3,7 +3,10 @@ FROM golang:1.26.6-alpine AS builder
 WORKDIR /src
 
 ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# No default: BuildKit sets TARGETARCH per --platform, and a default here
+# would override it (a linux/arm64 image would get an amd64 binary). Without
+# BuildKit it is empty and Go builds for the builder's own architecture.
+ARG TARGETARCH
 
 COPY go.mod go.sum ./
 RUN go mod download

@@ -57,6 +57,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Docker: the `linux/arm64` image contained an amd64 binary, because the
+  Dockerfile's `TARGETARCH` default overrode the platform BuildKit sets.
 - Responses translation: `input_text`, `input_image` and `input_file` items
   sent at the top level of `input` (no wrapping message), as Codex does for
   images in multi-turn history, were silently dropped. They now join the user
