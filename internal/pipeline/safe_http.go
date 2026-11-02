@@ -39,6 +39,9 @@ const (
 var safeHTTPClient = &http.Client{
 	Timeout: imageFetchTimeout,
 	Transport: &http.Transport{
+		// Never through HTTP(S)_PROXY: the dial-time check would then
+		// validate the proxy's address, not the image host's.
+		Proxy:                 nil,
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, Control: ssrfSafeControl}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,

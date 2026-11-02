@@ -17,6 +17,16 @@ Production deployment details for go-llm-proxy.
 
 To reach services at remote sites through an [eidonix-connect](connect.md) hub, run the proxy with `docker/compose.connect.yaml`: no published ports, attached to the external `eidonix-connect` and `eidonix-edge` Docker networks (alias `go-llm-proxy`). See [connect.md](connect.md#deploying-next-to-the-hub).
 
+## Outbound HTTP proxy
+
+Requests to model backends, search providers and other upstream services
+honor the standard `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` environment
+variables. `connect://` backends are sent to the connect hub's URL, so list
+the hub (and any LAN backends) in `NO_PROXY` when a proxy is set, for
+example `NO_PROXY=connect,localhost,192.168.0.0/16`. Image fetches for vision
+requests never use the proxy: their SSRF check validates the address they
+connect to.
+
 ## Optional system dependencies
 
 For scanned-PDF OCR via rasterization (recommended when using a dedicated OCR model like paddleOCR-VL):

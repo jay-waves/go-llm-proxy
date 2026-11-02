@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Upstream requests honor `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+  (vision image fetches excepted). See docs/deployment.md.
 - `max_request_body_mb` (default 50, the previous fixed limit; 1-2048) sets
   the request body limit on every endpoint, for clients whose image or PDF
   requests exceed 50 MB. A body over the limit is logged with its path.

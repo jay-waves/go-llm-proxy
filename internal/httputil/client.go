@@ -68,6 +68,9 @@ func sharedTransport(headerTimeout time.Duration) http.RoundTripper {
 		return rt
 	}
 	rt := &connectRoundTripper{base: &http.Transport{
+		// HTTP_PROXY / HTTPS_PROXY / NO_PROXY apply to upstream requests,
+		// including connect:// backends once resolved to the hub's URL.
+		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
