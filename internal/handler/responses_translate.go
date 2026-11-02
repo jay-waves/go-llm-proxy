@@ -248,6 +248,36 @@ func translateInputWith(input json.RawMessage, instructions string, opts transla
 			item.Type == "mcp_list_tools":
 			continue // tool definitions are collected separately; the rest has no Chat Completions equivalent
 
+		case item.Type == "input_text" || item.Type == "input_image" || item.Type == "input_file":
+			// A content part sent as a top-level input item, with no
+			// wrapping message: Codex replays images this way in multi-turn
+			// history. It joins the user message right before it, or opens a
+			// new user message, and is translated like the same part inside a
+			// message (an image that is really a PDF goes to the PDF pipeline).
+			var p map[string]json.RawMessage
+			if json.Unmarshal(raw, &p) != nil {
+				continue
+			}
+			var part map[string]any
+			switch item.Type {
+			case "input_text":
+				var text string
+				json.Unmarshal(p["text"], &text)
+				part = map[string]any{"type": "text", "text": text}
+			case "input_image":
+				part = translateInputImage(p)
+			default:
+				part = translateInputFile(p)
+			}
+			pendingReasoning = ""
+			if n := len(messages); n > 0 && appendUserPart(messages[n-1], part) {
+				continue
+			}
+			messages = append(messages, map[string]any{
+				"role":    "user",
+				"content": []map[string]any{part},
+			})
+
 		case item.Role == "system" || item.Role == "developer":
 			text := messageText(item.Content)
 			if text == "" {
@@ -279,6 +309,33 @@ func translateInputWith(input json.RawMessage, instructions string, opts transla
 	}
 
 	return finish()
+}
+
+// appendUserPart adds a content part to msg when it is a user message, and
+// reports whether it did. A developer message sent with role "user" (see
+// laterDeveloperMessage) is not one: the part must not join its wrapper.
+func appendUserPart(msg map[string]any, part map[string]any) bool {
+	if msg["role"] != "user" {
+		return false
+	}
+	switch c := msg["content"].(type) {
+	case string:
+		if strings.HasPrefix(c, developerOpen) {
+			return false
+		}
+		parts := []map[string]any{}
+		if c != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": c})
+		}
+		msg["content"] = append(parts, part)
+	case []map[string]any:
+		msg["content"] = append(c, part)
+	case []any:
+		msg["content"] = append(c, part)
+	default:
+		msg["content"] = []map[string]any{part}
+	}
+	return true
 }
 
 // laterDeveloperMessage builds the chat message for a system/developer

@@ -52,6 +52,11 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Responses translation: `input_text`, `input_image` and `input_file` items
+  sent at the top level of `input` (no wrapping message), as Codex does for
+  images in multi-turn history, were silently dropped. They now join the user
+  message before them or open one, translated like the same part inside a
+  message (an image that is really a PDF goes to the PDF pipeline).
 - Web search: at most 5 searches per client request across every round of
   the proxy's search loop (`max_uses` can lower it, not raise it; Claude Code
   sends 8), and a round's searches run concurrently instead of one after
