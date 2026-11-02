@@ -78,9 +78,11 @@ func (h *AudioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, api.MaxRequestBodySize)
+	bodyLimit := h.config.Get().RequestBodyLimit()
+	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		logBodyLimit(r, err, bodyLimit)
 		httputil.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
@@ -137,9 +139,11 @@ func (h *DocumentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "document processing is not configured")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, api.MaxRequestBodySize)
+	bodyLimit := h.config.Get().RequestBodyLimit()
+	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		logBodyLimit(r, err, bodyLimit)
 		httputil.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}

@@ -7,6 +7,7 @@ go-llm-proxy is configured via a single YAML file (default: `config.yaml`). See 
 | Field | Default | Description |
 |---|---|---|
 | `listen` | `":8080"` | Bind address (e.g., `"127.0.0.1:8080"` for localhost only) |
+| `max_request_body_mb` | `50` | Largest request body accepted, in MB (1–2048), on every endpoint; larger bodies get 413. Bodies are held in memory while a request is translated, so raise it only as far as large image or PDF requests need. |
 | `aliases` | `{}` | Exact, case-sensitive client model IDs mapped to configured chat model names |
 | `trusted_proxies` | `[]` | IPs/CIDRs allowed to set `X-Real-IP` / `X-Forwarded-For` |
 | `serve_config_generator` | `false` | Enable the config generator UI at `GET /` |

@@ -8,6 +8,7 @@
 # For bare metal behind nginx: use "127.0.0.1:8080".
 # For local-only testing: use ":8080".
 listen: ":8080"
+# max_request_body_mb: 50   # largest request body in MB (1-2048); raise for very large image/PDF requests
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 # Each logical model owns the list of servers that serve it. Add another

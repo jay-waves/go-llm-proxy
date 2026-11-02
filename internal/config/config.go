@@ -150,6 +150,7 @@ func (c *Config) AutoModeModel() *ModelConfig {
 
 type Config struct {
 	Listen                 string            `yaml:"listen"`
+	MaxRequestBodyMB       int               `yaml:"max_request_body_mb,omitempty"` // request body limit in MB (0 = DefaultMaxRequestBodyMB)
 	Models                 []ModelConfig     `yaml:"models"`
 	Aliases                map[string]string `yaml:"aliases,omitempty"` // client-facing alias -> canonical model name
 	Keys                   []KeyConfig       `yaml:"keys"`
@@ -695,6 +696,9 @@ func validateConfig(cfg *Config) error {
 
 	if cfg.HealthInterval < 0 {
 		return fmt.Errorf("health_interval must not be negative")
+	}
+	if cfg.MaxRequestBodyMB < 0 || cfg.MaxRequestBodyMB > MaxRequestBodyMBCeiling {
+		return fmt.Errorf("max_request_body_mb must be between 1 and %d (0 or unset = %d)", MaxRequestBodyMBCeiling, DefaultMaxRequestBodyMB)
 	}
 	if c := cfg.Connect; c != nil && c.URL != "" {
 		u, err := url.Parse(c.URL)

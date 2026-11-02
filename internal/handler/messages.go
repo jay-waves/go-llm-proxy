@@ -70,10 +70,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		requireAnthropic = true
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, api.MaxRequestBodySize)
+	bodyLimit := h.config.Get().RequestBodyLimit()
+	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
 	body, err := io.ReadAll(r.Body)
 	r.Body.Close()
 	if err != nil {
+		logBodyLimit(r, err, bodyLimit)
 		httputil.WriteAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
 		return
 	}

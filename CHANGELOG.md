@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `max_request_body_mb` (default 50, the previous fixed limit; 1-2048) sets
+  the request body limit on every endpoint, for clients whose image or PDF
+  requests exceed 50 MB. A body over the limit is logged with its path.
 - Documents: `POST /restructure-pages` alongside `/layout-parsing`, and both
   under `/v1` as well, forwarding PaddleOCR-VL's pipeline contract unchanged.
   `/v1/capabilities` lists it as `documents_restructure`.
