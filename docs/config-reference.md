@@ -1,5 +1,17 @@
 # Configuration Reference
 
+Browser API clients can be allowed explicitly with a hot-reloaded origin list:
+
+```yaml
+cors_allowed_origins:
+  - http://pdf.ts.localhost
+  - http://epub.ts.localhost
+```
+
+Omit the list or set `[]` to disable CORS. Wildcards and URLs containing paths
+are rejected. API authentication still applies; admin routes are excluded.
+See [Browser API access](web-ui.md#browser-api-access).
+
 go-llm-proxy is configured via a single YAML file (default: `config.yaml`). See `config.yaml.example` for a complete annotated template.
 
 ## Top-level settings
@@ -18,7 +30,6 @@ go-llm-proxy is configured via a single YAML file (default: `config.yaml`). See 
 | `connect` | — | Optional [Eidonix connect](connect.md) hub: `url` (default `http://connect:8080`), `application` (default `go-llm-proxy`) and `key_file` (file holding the hub application key, see [connect.md](connect.md#application-key); none by default). Backends written `connect://<site>/<service>/<path>` are reached through it |
 | `health_interval` | `30` | Seconds between backend health probes. Read at startup (restart to change). Disabled backends are never probed; connect backends are judged from the hub catalog every 15 s instead |
 | `auto_mode` | — | Optional [Claude Code auto mode](claude-code.md#auto-mode) decision head: `model` (a configured model or alias with an OpenAI-compatible backend that supports `logprobs` and `continue_final_message`) and `block_probability` (default `0.5`, between 0 and 1). Absent means no interception |
-| `enrollment` | — | Optional [self-service API keys](#self-service-api-keys-enrollment): people get or replace their own key by confirming a work email |
 | `admin_password` | — | Enables the admin UI at `/admin` on its own; when unset, `/admin` uses the dashboard password (and requires the dashboard to be enabled). Falls back to `GO_LLM_ADMIN_PASSWORD` if unset — see below |
 
 ### Environment variable overrides
@@ -171,21 +182,17 @@ models:
 | `reasoning_effort` | string | Backend-specific thinking budget, such as `low`, `medium`, `high`, or `xhigh` |
 | `stop` | list | Strings that trigger end of generation |
 
-## Chat helpers
-
-The `processors` block retains chat-only helpers: transparent image description
-and web search for chat backends that do not support them natively.
+## Image helpers
 
 ```yaml
 processors:
-  vision: Qwen3-VL-8B           # model name for vision processing (must be in models list)
-  web_search_key: tvly-...      # Tavily API key for web search
+  vision_models: [vision-model]
 ```
 
-| Field | Default | Description |
-|---|---|---|
-| `vision` | — | Model name to use for describing images sent to text-only backends. Must be a vision-capable model defined in `models`. |
-| `web_search_key` | — | Search API key. Supports [Tavily](https://tavily.com/) (`tvly-...`) and [Brave Search](https://brave.com/search/api/) (`BSA...`) — provider is auto-detected from the key prefix. When set, the proxy executes web searches on behalf of clients (Claude Code, Codex) transparently. |
+`vision_models` is an ordered fallback list for image descriptions. A model can
+override the helper with `processors.vision`, or set it to `none` to disable the
+fallback. `rewrite_vision` accepts `on`, `off`, or an omitted automatic default.
+Files are forwarded without proxy-side parsing, OCR, downloading or rendering.
 
 ## Audio workloads
 
@@ -212,96 +219,6 @@ upstream request/response contracts. Configured Whisper and TTS names also
 appear in the proxy's aggregated `GET /v1/models` response, subject to the
 requesting API key's model restrictions. Either workload may be omitted.
 
-## Document workloads
-
-```yaml
-documents:
-  paddleocr:
-    endpoint: /layout-parsing
-    health_endpoint: /health
-    timeout: 300
-    backends:
-      - url: http://192.168.13.30:8002
-```
-
-The proxy exposes PaddleOCR-VL's pipeline service, `POST /layout-parsing` and
-`POST /restructure-pages`, and forwards the official request and response
-unchanged, so every pipeline option (`promptLabel`, `useSealRecognition`,
-`restructurePages`, `outputFormats`, ...) works. Both routes are also served
-under `/v1` for clients that only take a `/v1` base URL. `/restructure-pages`
-goes to the sibling of `endpoint` (`/ocr/layout-parsing` gives
-`/ocr/restructure-pages`). No artificial OpenAI model ID is required.
-
-The PaddleOCR-VL model server itself (`paddleocr genai_server`) is an
-ordinary OpenAI-compatible backend: add it under `models` to offer its
-single-image task prompts (`OCR:`, `Table Recognition:`, `Formula
-Recognition:`, `Chart Recognition:`) on `/v1/chat/completions`.
-
-### Per-model processor overrides
-
-Each model can override or disable global processors:
-
-```yaml
-models:
-  - name: MiniMax-M2.5
-    backends:
-      - url: http://192.168.13.32:8000/v1
-    # No vision → images routed to qwen-3.5 automatically
-
-  - name: qwen-3.5
-    backends:
-      - url: http://192.168.13.30:8000/v1
-    supports_vision: true         # model handles images natively
-    processors:
-      vision: none                # disable vision processing for this model
-
-  - name: glm-5.1
-    backends:
-      - url: https://api.z.ai/api/coding/paas/v4
-    processors:
-      vision: MiniMax-M2.5        # use a specific model for this backend's images
-```
-
-### Additional model fields for pipeline
-
-| Field | Default | Description |
-|---|---|---|
-| `supports_vision` | `false` | Set to `true` if the model handles images natively. Skips vision processing. |
-| `force_pipeline` | `false` | Run the pipeline even on native Anthropic backends. Use to force Tavily search instead of Anthropic's server-side search, or to test pipeline processing. |
-| `processors` | — | Per-model processor overrides. Set `vision: none` to disable, or `vision: other-model` to use a specific processor. Same for `ocr`. |
-
-### How it works
-
-**Vision processing**: When a client sends an image to a text-only model, the proxy sends the image to the configured vision model with a description prompt, then replaces the image with the text description. The backend model receives only text. Images are processed concurrently (up to 5 in parallel) and cached by content hash so follow-up turns are instant.
-
-**Legacy OCR compatibility**: Existing `processors.ocr` settings remain readable
-for tool-result images and rasterized pages. New document deployments should
-use `documents.paddleocr`; if neither is available, the vision model is the
-fallback.
-
-**Web search**: When a client (Claude Code, Codex) includes a web search tool, the proxy converts it to a function tool that the backend can call. If the backend calls `web_search`, the proxy executes a Tavily search, injects the results, and re-sends to the backend. The client sees only the final response with search context incorporated.
-
-**PDF processing**: Native text is extracted first. Scanned PDFs go to the
-configured document layout service, with legacy OCR and vision as fallbacks.
-
-Native Anthropic backends skip the pipeline by default (images, search, and PDFs pass through to Anthropic's infrastructure). Set `force_pipeline: true` to override this.
-
-### Server-side features
-
-Some coding agents (Claude Code, Codex) expect server-side features from the API. The proxy emulates or passes through the following:
-
-| Feature | Status | Notes |
-|---|---|---|
-| Token usage tracking | Supported | `input_tokens` and `output_tokens` from backend response forwarded to client. Enables `/context` display and auto-compact triggers. |
-| Context compaction | Supported | `/compact` and auto-compact work via normal API calls. Token counts from backend drive the compaction threshold. |
-| Web search results | Emulated | `server_tool_use` + `web_search_tool_result` blocks emitted for Claude Code UI |
-| Extended thinking | Supported | Reasoning tokens translated to thinking blocks |
-| Prompt caching | Passthrough | `cache_control` fields forwarded to backends that support them; stripped otherwise |
-| Token counting endpoint | Not supported | Chat Completions backends have no equivalent; Claude Code falls back to local estimates |
-| Advisor tool | Not supported | Server-side reviewer model — requires Anthropic API |
-| Tool search / deferral | Not supported | `tool_reference` blocks — requires Anthropic API |
-| Files API | Not supported | File upload/download — requires Anthropic API |
-| Code execution | Not supported | Sandboxed server-side execution — requires Anthropic API |
 
 ## Key fields
 
@@ -321,77 +238,9 @@ keys:
 | `key` | yes | The API key value clients send via `Authorization: Bearer` or `x-api-key` |
 | `name` | yes | Friendly name for logging |
 | `models` | no | Allowed model names. Empty or omitted = all models |
-| `email` | no | Set on keys issued by [enrollment](#self-service-api-keys-enrollment): the owner's lowercase address. One key per address |
-| `join_key` | no | Set on enrolled keys: the id of the join key it came through |
 
 Remove the `keys` section entirely to disable authentication (not recommended for public exposure).
 
-## Self-service API keys (enrollment)
-
-Instead of issuing keys by hand, an administrator can hand out a join link
-per team. Whoever opens it enters a work email in one of the link's domains,
-gets a one-time confirmation link by email (valid 30 minutes, single use), and
-is shown their own API key once, with steps to download code-link, paste the
-key and launch Claude Code or Codex. Someone who already has a key uses the
-same link to replace it: the old key stops working. Keys are written to
-`keys` like any other (name = email) and appear on the admin **API Keys** tab,
-where they can be rotated or revoked as usual.
-
-Set it up on the admin **Enrollment** tab, or in YAML:
-
-```yaml
-enrollment:
-  public_url: https://llm.example.com      # where emailed links point (required)
-  # paused: true                           # stops every join link
-  smtp:
-    host: smtp.example.com
-    port: 587                              # default 587
-    username: no-reply@example.com
-    password_file: /run/secrets/smtp_password   # preferred; or password: ...
-    from: "llm.example.com <no-reply@example.com>"
-    reply_to: support@example.com
-    # starttls: false                      # default true: refuses to send in plaintext
-  # downloads:                             # defaults point at codelink.eidonix.com
-  #   macos: https://example.com/code-link/macos
-  #   windows: https://example.com/code-link/windows
-  #   quickstart: https://example.com/code-link/quickstart
-  join_keys:
-    - id: example-co                       # recorded on every key it issues
-      name: Example Co                     # shown on the join page
-      key: replace-with-a-long-random-string  # the secret in /join/<key>; the admin page generates one
-      domains: [example.com]               # exact, lowercase; at least one
-      models: [my-model]                   # issued keys' allowed models; empty = all
-      # paused: true
-      # public: true                       # also accept these domains at /join
-```
-
-| Route | What it does |
-|---|---|
-| `GET /join/{key}` | The email form for one join link. An unknown or paused link (or enrollment paused or not configured) says "This link isn't active" |
-| `POST /join/{key}` | Emails a confirmation link when the address's domain is allowed. Every submission gets the same answer, so the page can't be used to find out which addresses or domains can get a key |
-| `GET /join` / `POST /join` | The same form without a link (code-link's "Get a key" opens it). The email's domain picks the active `public: true` join key that lists it; a domain may belong to only one public join key. With none active it asks for a team link |
-| `GET /join/confirm/{token}` | Shows what the button will do ("Create my key" or "Get a new key"). Opening it changes nothing, so mail scanners that prefetch links can't use it up |
-| `POST /join/confirm/{token}` | Uses the link up, creates or replaces the key and shows it once. The key is never emailed |
-
-Notes:
-
-- **Links use `public_url`, never the request's Host header**, so a forged
-  Host can't point a confirmation link at another site. Join links answer
-  "not active" until `public_url`, `smtp.host` and `smtp.from` are set.
-- **Pending confirmations live in memory.** A restart invalidates them; the
-  person just asks again.
-- **Rate limits** (per hour): 120 page views and 10 submissions per client IP,
-  3 confirmation emails per address, 200 submissions per join key, 20 key
-  creations per IP. Client IPs honour `trusted_proxies` like the rest of the
-  proxy.
-- **Domains are an exact allowlist** (no subdomains), so only the
-  addresses you list can get a key. Input is checked strictly: plain ASCII
-  addresses only, no display names, quoting or IP-literal domains.
-- Deleting a join link leaves the keys it issued working; revoke them on the
-  API Keys tab. If a model is force-deleted and a join key's model list
-  empties, the join key is paused rather than widened to every model.
-- Without any `keys`, the proxy runs unauthenticated; the first enrolled key
-  turns authentication on for everyone.
 
 ## Backend URL routing
 
@@ -563,31 +412,6 @@ Set `context_window` explicitly for backends that don't report it:
   context_window: 1048576   # 1M tokens
 ```
 
-## Services
-
-External service proxies configured under the `services` key. Currently supports Qdrant vector database.
-
-```yaml
-services:
-  qdrant:
-    backend: http://192.168.5.143:6333
-    api_key: your-qdrant-api-key
-    app_keys:
-      - name: webapp
-        key: qd-webapp-abc123
-      - name: crawler
-        key: qd-crawler-def456
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `qdrant.backend` | yes | Qdrant server URL (`http(s)://` or `connect://<site>/<service>`) |
-| `qdrant.api_key` | no | API key sent to the Qdrant backend |
-| `qdrant.app_keys` | yes | Application keys for proxy authentication |
-| `qdrant.app_keys[].name` | yes | Friendly name (used for isolation and logging) |
-| `qdrant.app_keys[].key` | yes | The API key clients send via `Authorization: Bearer` |
-
-App keys are separate from model API keys. Each app's data is automatically isolated — the proxy injects the app name into point payloads on writes and filters by app on searches. See [docs/qdrant.md](qdrant.md) for full details.
 
 ## Config reload
 
@@ -642,7 +466,6 @@ models:
 
 processors:
   vision: Qwen3-VL-8B
-  web_search_key: tvly-your-tavily-key
 
 documents:
   paddleocr:
@@ -669,7 +492,6 @@ models:
 
 processors:
   vision: Qwen3-VL-8B
-  web_search_key: tvly-your-tavily-key
 
 documents:
   paddleocr:

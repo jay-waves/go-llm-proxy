@@ -147,36 +147,6 @@ func TestCompat_DocumentOnVisionModelBecomesText(t *testing.T) {
 	}
 }
 
-func TestCompat_DocumentWithRewriteOffBecomesFilePart(t *testing.T) {
-	for _, withPipeline := range []bool{true, false} {
-		var cap capturedUpstream
-		h, _ := newCompatHandler(t, config.ModelConfig{SupportsVision: true, RewriteDocuments: "off"}, withPipeline,
-			func(w http.ResponseWriter, r *http.Request) {
-				raw, _ := io.ReadAll(r.Body)
-				cap.set(raw)
-				simpleChatResponse(w, "ok")
-			})
-		body := `{"model":"test-model","max_tokens":100,"messages":[{"role":"user","content":[
-			{"type":"document","title":"a.pdf","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQ="}}]}]}`
-		if w := postMessages(h, body); w.Code != 200 {
-			t.Fatalf("status %d: %s", w.Code, w.Body.String())
-		}
-		if bytes.Contains(cap.raw, []byte("pdf_data")) {
-			t.Fatalf("pdf_data leaked (pipeline=%v): %s", withPipeline, cap.raw)
-		}
-		msgs := upstreamMessages(t, &cap)
-		parts := msgs[0]["content"].([]any)
-		file := parts[0].(map[string]any)
-		if file["type"] != "file" {
-			t.Fatalf("expected file part, got %v", file)
-		}
-		fd := file["file"].(map[string]any)
-		if fd["file_data"] != "data:application/pdf;base64,JVBERi0xLjQ=" || fd["filename"] != "a.pdf" {
-			t.Fatalf("bad file part: %v", fd)
-		}
-	}
-}
-
 func TestCompat_TextDocumentSources(t *testing.T) {
 	msgs, _ := translateAnthropicMessages([]json.RawMessage{json.RawMessage(`{"role":"user","content":[
 		{"type":"document","title":"Notes","context":"from the wiki","citations":{"enabled":true},"cache_control":{"type":"ephemeral"},

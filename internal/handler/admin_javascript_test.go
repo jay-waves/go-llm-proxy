@@ -12,14 +12,16 @@ func TestAdminJavaScriptSyntax(t *testing.T) {
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	pages := map[string]string{
-		"users":      adminClientJS() + usersPageJS(),
-		"chat":       adminClientJS() + modelsPageJS(),
-		"audio":      adminClientJS() + audioPageJS(),
-		"documents":  adminClientJS() + documentsPageJS(),
-		"enrollment": adminClientJS() + enrollmentPageJS(),
+	assets, err := webFiles.ReadDir("web/static")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, script := range pages {
+	for _, asset := range assets {
+		name := asset.Name()
+		if filepath.Ext(name) != ".js" {
+			continue
+		}
+		script := webAsset("static/" + name)
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), name+".js")
 			if err := os.WriteFile(path, []byte(script), 0o600); err != nil {

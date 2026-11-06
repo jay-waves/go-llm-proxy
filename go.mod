@@ -4,7 +4,6 @@ go 1.26.6
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.0
 )

@@ -31,18 +31,19 @@ func TestUsageLoggerCloseDrainsQueuedRecords(t *testing.T) {
 	}
 	defer db.Close()
 	var got int
-	if err := db.QueryRow("SELECT COUNT(*) FROM usage").Scan(&got); err != nil {
+	if err := db.QueryRow("SELECT SUM(requests) FROM usage_daily").Scan(&got); err != nil {
 		t.Fatal(err)
 	}
 	if got != records {
 		t.Fatalf("Close persisted %d records, want %d", got, records)
 	}
-	var model, aliasFrom string
-	if err := db.QueryRow("SELECT model, alias_from FROM usage LIMIT 1").Scan(&model, &aliasFrom); err != nil {
+	var model string
+	var buckets int
+	if err := db.QueryRow("SELECT model, COUNT(*) FROM usage_daily").Scan(&model, &buckets); err != nil {
 		t.Fatal(err)
 	}
-	if model != "canonical" || aliasFrom != "reviewer" {
-		t.Fatalf("stored model metadata = (%q, %q)", model, aliasFrom)
+	if model != "canonical" || buckets != 1 {
+		t.Fatalf("stored model = %q, buckets = %d; expected one daily bucket", model, buckets)
 	}
 }
 

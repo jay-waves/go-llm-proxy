@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client setup · LLM Proxy</title>
+
+<link rel="stylesheet" href="/assets/base.css">
+<link rel="stylesheet" href="/assets/admin.css">
+<link rel="stylesheet" href="/assets/setup.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      
+      <span>LLM Proxy</span>
+    </a>
+    <div class="topbar-right">
+      <a class="login-icon" href="/admin" title="Sign in" aria-label="Sign in"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg></a>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Models reference -->
+  <div class="card">
+    <div class="card-header"><h2>Available Models</h2><div class="card-tools"><input id="modelTableFilter" class="filter-input" type="search" placeholder="Filter models&hellip;" autocomplete="off"><button class="btn btn-primary" type="button" onclick="openGen()">Generate Config</button></div></div>
+    <table class="model-table">
+      <thead><tr><th>Model</th><th style="width:110px">Status</th><th style="width:100px">Protocol</th><th style="width:180px">URL</th><th style="width:110px">Context</th><th style="width:130px">Data Safety</th></tr></thead>
+      <tbody id="modelTableBody"></tbody>
+    </table>
+    <div class="endpoints"><code>OpenAI&nbsp;&middot;&nbsp;<span id="epOai"></span></code> <code>Anthropic&nbsp;&middot;&nbsp;<span id="epAnt"></span></code></div>
+  </div>
+
+
+  <!-- Config generator (modal) -->
+  <div id="genModal" class="modal-backdrop" onclick="if(event.target.id==='genModal')closeGen()">
+    <div class="modal" style="max-width:900px" role="dialog">
+      <div class="modal-header"><h2>Generate Configuration</h2><button class="modal-close" type="button" onclick="closeGen()">&times;</button></div>
+      <div class="modal-body">
+
+    <div class="field">
+      <label for="harness">Coding Assistant</label>
+      <select id="harness">
+        <option value="">Select a coding assistant&hellip;</option>
+        <option value="claude-code">Claude Code</option>
+        <option value="codex">Codex</option>
+        <option value="qwen-code">Qwen Code</option>
+        <option value="opencode">OpenCode</option>
+      </select>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label for="apiKey">Proxy API Key</label>
+        <input type="password" id="apiKey" placeholder="your-proxy-api-key" autocomplete="off">
+      </div>
+    </div>
+
+    <!-- Claude Code model selectors (Sonnet/Opus/Haiku) -->
+    <div id="claudeSelectors" class="hidden">
+      <div class="field-row">
+        <div class="field">
+          <label for="sonnetModel">Sonnet <span style="font-weight:400;text-transform:none">(default model)</span></label>
+          <select id="sonnetModel"></select>
+          <label style="display:inline-flex;align-items:center;gap:5px;margin-top:5px;font-size:.82rem;font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer"><input type="checkbox" id="sonnetThinking" checked style="width:14px;height:14px;accent-color:var(--ink)"> Thinking</label>
+        </div>
+        <div class="field">
+          <label for="opusModel">Opus <span style="font-weight:400;text-transform:none">(large model)</span></label>
+          <select id="opusModel"></select>
+          <label style="display:inline-flex;align-items:center;gap:5px;margin-top:5px;font-size:.82rem;font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer"><input type="checkbox" id="opusThinking" checked style="width:14px;height:14px;accent-color:var(--ink)"> Thinking</label>
+        </div>
+        <div class="field">
+          <label for="haikuModel">Haiku <span style="font-weight:400;text-transform:none">(fast model)</span></label>
+          <select id="haikuModel"></select>
+          <label style="display:inline-flex;align-items:center;gap:5px;margin-top:5px;font-size:.82rem;font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer"><input type="checkbox" id="haikuThinking" style="width:14px;height:14px;accent-color:var(--ink)"> Thinking</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- OpenCode model selectors (build/plan + model list) -->
+    <div id="openCodeSelectors" class="hidden">
+      <div class="field-row">
+        <div class="field">
+          <label for="buildModel">Build Agent <span style="font-weight:400;text-transform:none">(coding)</span></label>
+          <select id="buildModel"></select>
+        </div>
+        <div class="field">
+          <label for="planModel">Plan Agent <span style="font-weight:400;text-transform:none">(reasoning)</span></label>
+          <select id="planModel"></select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>Available Models <span style="font-weight:400;text-transform:none">(included in config)</span></label>
+        <div class="checkbox-group" id="ocAdditionalModels"></div>
+      </div>
+    </div>
+
+    <!-- Multi-select (qwen-code) -->
+    <div id="multiSelectors" class="hidden">
+      <div class="field">
+        <label>Default Model</label>
+        <select id="defaultModel"></select>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>Additional Models <span style="font-weight:400;text-transform:none">(available via /model)</span></label>
+        <div class="checkbox-group" id="additionalModels"></div>
+      </div>
+    </div>
+
+    <!-- Codex model selectors -->
+    <div id="codexSelectors" class="hidden">
+      <div class="field-row">
+        <div class="field">
+          <label for="codexModel">Model</label>
+          <select id="codexModel"></select>
+        </div>
+        <div class="field">
+          <label for="codexEffort">Reasoning Effort</label>
+          <select id="codexEffort">
+			<option value="xhigh">Extra High</option>
+            <option value="high">High</option>
+            <option value="medium" selected>Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="codexCtxWindow">Context Window</label>
+          <select id="codexCtxWindow">
+            <option value="auto" selected>Auto-detect</option>
+            <option value="8192">8K</option>
+            <option value="16384">16K</option>
+            <option value="32768">32K</option>
+            <option value="65536">64K</option>
+            <option value="131072">128K</option>
+            <option value="196608">192K</option>
+            <option value="262144">256K</option>
+            <option value="524288">512K</option>
+            <option value="1048576">1M</option>
+          </select>
+          <div class="hint" id="codexCtxHint"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Output format (claude-code + codex) -->
+    <div id="outputFormatField" class="hidden">
+      <div class="field">
+        <label>Output Format</label>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <label class="checkbox-group" style="padding:0;display:inline-flex;cursor:pointer">
+            <input type="radio" name="outputFormat" value="config" checked style="width:16px;height:16px;accent-color:var(--ink)">
+            <span style="font-size:.9rem">Configuration file</span>
+          </label>
+          <label class="checkbox-group" style="padding:0;display:inline-flex;cursor:pointer;margin-left:12px">
+            <input type="radio" name="outputFormat" value="command" style="width:16px;height:16px;accent-color:var(--ink)">
+            <span style="font-size:.9rem">Start command (shell script)</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="generateBtn" disabled onclick="generate()">Generate Config</button>
+    </div>
+
+  <!-- Output -->
+  <div class="output-area" id="outputArea">
+    <div class="gen-section">
+      <h3 id="configTitle">Configuration File</h3>
+      <div id="configOutput"></div>
+    </div>
+
+    <div class="gen-section">
+      <h3>Installation Instructions</h3>
+      <div class="tabs" id="osTabs">
+        <button class="tab active" data-os="macos" onclick="switchOS('macos')">macOS</button>
+        <button class="tab" data-os="linux" onclick="switchOS('linux')">Linux</button>
+        <button class="tab" data-os="windows" onclick="switchOS('windows')">Windows</button>
+      </div>
+      <div class="tab-content active" id="os-macos"></div>
+      <div class="tab-content" id="os-linux"></div>
+      <div class="tab-content" id="os-windows"></div>
+    </div>
+  </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+var MODELS = {{.Models}};
+var HAS_VISION = {{.HasVision}};
+var HEALTH = {{.Health}};
+</script>
+<script src="/assets/setup.js"></script>
+</body>
+</html>

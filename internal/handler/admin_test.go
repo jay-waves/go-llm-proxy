@@ -75,8 +75,8 @@ func TestLoginPageRenders(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "Sign In") {
-		t.Errorf("login page missing Sign In: %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), "Sign in") {
+		t.Errorf("login page missing Sign in: %q", w.Body.String())
 	}
 }
 
@@ -90,8 +90,8 @@ func TestModelsPageHasDedicatedAliasingTab(t *testing.T) {
 	}
 
 	page := w.Body.String()
-	if !strings.Contains(page, `class="brand-app-accent">LLM Proxy</span>`) {
-		t.Error("admin shell missing turquoise LLM Proxy wordmark")
+	if !strings.Contains(page, `class="brand" href="/admin">LLM Proxy</a>`) {
+		t.Error("admin shell missing product home link")
 	}
 	if strings.Contains(page, `brand-app">· Admin`) {
 		t.Error("admin shell still renders the old Admin wordmark")
@@ -100,9 +100,9 @@ func TestModelsPageHasDedicatedAliasingTab(t *testing.T) {
 		`id="subtabModels"`,
 		`id="subtabHelpers"`,
 		`id="subtabAliasing"`,
-		`>Model Aliasing</button>`,
+		`>Aliases</button>`,
 		`id="pane-aliasing"`,
-		`?tab=aliasing`,
+		`src="/assets/models.js"`,
 		`name="responses_mode"`,
 		`value="native">Native passthrough`,
 		`<option>xhigh</option>`,

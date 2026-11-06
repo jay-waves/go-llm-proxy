@@ -130,7 +130,6 @@ func (h *ResponsesHandler) HandleCompact(w http.ResponseWriter, r *http.Request)
 		"stream":   false,
 	}
 
-	downgradePDFData(chatReq)
 	model.ApplySamplingDefaults(chatReq)
 
 	chatBody, err := json.Marshal(chatReq)

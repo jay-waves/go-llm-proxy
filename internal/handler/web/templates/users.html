@@ -1,0 +1,44 @@
+<div class="card">
+  <div class="card-header">
+    <h2>API Keys</h2>
+    <div class="card-tools">
+      <input id="userFilter" class="filter-input" type="search" placeholder="Filter by name, key, or model&hellip;" autocomplete="off">
+      <button class="btn btn-primary" type="button" onclick="openUserModal('add')">+ Add Key</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th style="width:170px">Name</th><th style="width:140px">Key</th><th>Allowed Models</th><th style="width:96px" title="Most recent request in the last 30 days">Last seen</th><th style="width:88px;text-align:right" title="Requests in the last 30 days">Req · 30d</th><th style="width:112px;text-align:right" title="Tokens in the last 30 days">Tokens · 30d</th><th style="width:170px;text-align:right">Actions</th></tr></thead>
+      <tbody id="usersBody"><tr><td colspan="7" style="text-align:center;color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<div id="userModal" class="modal-backdrop" onclick="if(event.target.id==='userModal')closeUserModal()">
+  <div class="modal" style="max-width:400px" role="dialog">
+    <div class="modal-header"><h2 id="userModalTitle">Add API key</h2><button class="modal-close" type="button" onclick="closeUserModal()">&times;</button></div>
+    <form onsubmit="submitUserModal(event)">
+      <div class="modal-body">
+        <div class="field"><label for="userNameInput">Name</label><input type="text" id="userNameInput" required maxlength="100" autocomplete="off" placeholder="who this key belongs to"></div>
+        <p class="hint" id="userModalHint"></p>
+        <div id="userModalErr" class="inline-err" style="display:none"></div>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeUserModal()">Cancel</button><button id="userModalSave" class="btn btn-primary" type="submit">Create key</button></div>
+    </form>
+  </div>
+</div>
+<div id="keyModal" class="modal-backdrop" onclick="if(event.target.id==='keyModal')closeKeyModal()">
+  <div class="modal" style="max-width:560px" role="dialog">
+    <div class="modal-header"><h2 id="keyModalTitle">API key</h2><button class="modal-close" type="button" onclick="closeKeyModal()">&times;</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Name</label><div id="keyModalName" style="font-weight:600"></div></div>
+      <div class="field"><label>LLM Key</label>
+        <div class="secret-row" style="align-items:stretch">
+          <code id="keyModalVal" style="flex:1;display:block;background:var(--panel);border:1px solid var(--hairline);padding:8px 10px;font-family:var(--font-mono);font-size:12px;word-break:break-all"></code>
+          <button class="btn btn-secondary" type="button" onclick="copyKeyModal()">Copy</button>
+        </div>
+      </div>
+      <p class="hint" id="keyModalHint" style="display:none"></p>
+    </div>
+    <div class="modal-footer"><button class="btn btn-secondary" type="button" onclick="closeKeyModal()">Close</button></div>
+  </div>
+</div>

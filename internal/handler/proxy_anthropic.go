@@ -30,7 +30,6 @@ func (p *ProxyHandler) handleAnthropicChat(
 	model *config.ModelConfig,
 	cfg *config.Config,
 	parsedChatReq map[string]any,
-	searchEnabled bool,
 	keyName, keyHash string,
 	startTime time.Time,
 ) {
@@ -53,7 +52,7 @@ func (p *ProxyHandler) handleAnthropicChat(
 
 	selected := model
 	resp, err := sendAnthropicMessagesHTTP(ctx, p.client, anthropicBody, selected, r.Header, parsedReq.Stream)
-	if (err != nil && ctx.Err() == nil) || (err == nil && resp.StatusCode >= 500) {
+	if err != nil && ctx.Err() == nil || err == nil && resp.StatusCode >= 500 {
 		if alternate, altRelease := lb.ResolveAlternate(cfg, selected, selected.Backend); alternate != nil {
 			defer altRelease()
 			lb.RecordAttempt(selected.Backend, statusOf(resp), err, false)
@@ -106,25 +105,6 @@ func (p *ProxyHandler) handleAnthropicChat(
 	includeUsage := chatStreamIncludesUsage(parsedReq.StreamOptions)
 
 	if parsedReq.Stream {
-		if searchEnabled {
-			// Translate incrementally into a pipe, then reuse the normal OpenAI
-			// stream search/tool-call machinery. The pipe preserves streaming;
-			// it does not buffer the completion in memory.
-			translatedReader, translatedWriter := io.Pipe()
-			go func() {
-				_, _ = streamAnthropicToChatSSE(translatedWriter, resp.Body, modelName, includeUsage, nil)
-				translatedWriter.Close()
-			}()
-			defer translatedReader.Close()
-			translatedResp := &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-				Body:       translatedReader,
-				Request:    resp.Request,
-			}
-			p.handleStreamingWithSearch(ctx, w, translatedResp, parsedChatReq, rc)
-			return
-		}
 
 		httputil.SetSecurityHeaders(w)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -165,9 +145,7 @@ func (p *ProxyHandler) handleAnthropicChat(
 		Request:    resp.Request,
 	}
 	httputil.SetSecurityHeaders(w)
-	if searchEnabled {
-		p.handleNonStreamingWithSearch(w, translatedResp, parsedChatReq, rc)
-	} else {
+	{
 		p.handleNonStreamingChatWithFilter(w, translatedResp, rc)
 	}
 }

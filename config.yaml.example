@@ -118,7 +118,6 @@ models:
 # Optional. Handles images and web search for chat models that need help.
 # processors:
 #   vision: my-vision-model          # model name from above (must support vision)
-#   web_search_key: tvly-...         # Tavily API key — enables proxy-side web search
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 # OpenAI-compatible audio routes. Configure either service independently.
@@ -135,16 +134,6 @@ models:
 #     backends:
 #       - url: http://192.168.13.30:8009/v1
 
-# ── Documents ─────────────────────────────────────────────────────────────────
-# PaddleOCR uses its official API contract; no model ID is invented.
-# documents:
-#   paddleocr:
-#     endpoint: /layout-parsing
-#     health_endpoint: /health
-#     timeout: 300
-#     backends:
-#       - url: http://192.168.13.30:8002
-
 # ── API Keys ───────────────────────────────────────────────────────────────────
 # Clients authenticate with these keys via Authorization: Bearer or x-api-key.
 # Remove this entire section to disable auth (not recommended for public exposure).
@@ -158,56 +147,30 @@ keys:
   #   name: guest
   #   models: [my-model]            # only this model
 
-# ── Self-service keys ─────────────────────────────────────────────────────────
-# Optional. People open a join link, confirm a work email and get their own key
-# (docs/config-reference.md, "Self-service API keys"). Easiest to set up on the
-# admin Enrollment tab, which also creates join keys.
-# enrollment:
-#   public_url: https://llm.example.com
-#   smtp:
-#     host: smtp.example.com
-#     username: no-reply@example.com
-#     password_file: /run/secrets/smtp_password
-#     from: "llm.example.com <no-reply@example.com>"
-#     reply_to: support@example.com
-#   join_keys:
-#     - id: example-co
-#       name: Example Co
-#       key: replace-with-a-long-random-string
-#       domains: [example.com]
-
 # ── Features ───────────────────────────────────────────────────────────────────
 # Config generator: web UI at GET / that creates client configs for coding assistants.
 # serve_config_generator: true
 
-# Usage logging: per-request metrics to SQLite.
+# Usage statistics: daily counters in SQLite (no per-request detail table).
 # log_metrics: true
 # usage_db: usage.db                # path to SQLite database (default: usage.db)
 
-# Usage dashboard: web UI at /usage (requires log_metrics and a password).
+# Unified console: /admin opens usage overview (logging requires log_metrics).
+# admin_password: change-me
+# Legacy dashboard settings below remain a fallback for the admin password.
+# /usage redirects to /admin/usage; there is no separate usage login.
 # usage_dashboard: true
 # usage_dashboard_password: change-me
 # admin_password: change-me-too      # enables /admin on its own (defaults to the dashboard password)
 
-# ── Services ─────────────────────────────────────────────────────────────────
-# External service proxies. Currently supports Qdrant vector database.
-
-# Qdrant proxy with app key isolation:
-# services:
-#   qdrant:
-#     backend: http://192.168.5.143:6333
-#     api_key: your-qdrant-api-key         # backend auth (optional)
-#     app_keys:                            # separate auth from model API keys
-#       - name: webapp
-#         key: qd-webapp-abc123
-#       - name: crawler
-#         key: qd-crawler-def456
-#
-# App isolation: each app's vectors are tagged with its name on write,
-# and filtered to only return its own data on search. Transparent to clients.
-# Access via /qdrant/* with Authorization: Bearer <app_key>
-
 # ── Network ────────────────────────────────────────────────────────────────────
+# Browser clients allowed to call model and document APIs. Exact origins only;
+# wildcards are rejected. Omit or use [] to disable cross-origin access.
+# Changes apply on config reload. Actual requests still require API keys.
+cors_allowed_origins:
+  - http://pdf.ts.localhost
+  - http://epub.ts.localhost
+
 # IPs allowed to set X-Real-IP / X-Forwarded-For (for rate limiting behind a proxy).
 # trusted_proxies:
 #   - "127.0.0.1"

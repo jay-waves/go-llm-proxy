@@ -577,7 +577,7 @@ func renameModelReferences(root *yaml.Node, oldName, newName string) {
 		}
 	}
 	if processors := findMappingValue(root, "processors"); processors != nil {
-		for _, field := range []string{"vision", "audio", "ocr"} {
+		for _, field := range []string{"vision", "audio"} {
 			if value := findMappingValue(processors, field); value != nil && value.Value == oldName {
 				value.Value = newName
 			}
@@ -597,7 +597,7 @@ func renameModelReferences(root *yaml.Node, oldName, newName string) {
 		if processors == nil {
 			continue
 		}
-		for _, field := range []string{"vision", "ocr"} {
+		for _, field := range []string{"vision"} {
 			if value := findMappingValue(processors, field); value != nil && value.Value == oldName {
 				value.Value = newName
 			}
@@ -660,14 +660,7 @@ func modelReferrers(cfg *Config, name string) []string {
 			}
 		}
 	}
-	for _, j := range cfg.Enrollment.JoinKeys {
-		for _, m := range j.Models {
-			if m == name {
-				refs = append(refs, "join key "+j.Name)
-				break
-			}
-		}
-	}
+
 	if cfg.AutoMode != nil && cfg.AutoMode.Model == name {
 		refs = append(refs, "auto_mode.model")
 	}
@@ -687,9 +680,7 @@ func modelReferrers(cfg *Config, name string) []string {
 	if cfg.Processors.Audio == name {
 		refs = append(refs, "processors.audio")
 	}
-	if cfg.Processors.OCR == name {
-		refs = append(refs, "processors.ocr")
-	}
+
 	for _, m := range cfg.Models {
 		if m.Processors == nil {
 			continue
@@ -697,9 +688,7 @@ func modelReferrers(cfg *Config, name string) []string {
 		if m.Processors.Vision == name {
 			refs = append(refs, "models."+m.Name+".processors.vision")
 		}
-		if m.Processors.OCR == name {
-			refs = append(refs, "models."+m.Name+".processors.ocr")
-		}
+
 	}
 	return refs
 }
@@ -741,26 +730,7 @@ func stripModelReferences(root *yaml.Node, modelName string) {
 			}
 		}
 	}
-	for _, entry := range joinKeyEntries(root) {
-		modelsVal := findMappingValue(entry, "models")
-		if modelsVal == nil || modelsVal.Kind != yaml.SequenceNode {
-			continue
-		}
-		filtered := modelsVal.Content[:0]
-		for _, child := range modelsVal.Content {
-			if child.Value != modelName {
-				filtered = append(filtered, child)
-			}
-		}
-		if len(filtered) == 0 {
-			// An emptied list would widen the join key to every model;
-			// pause it so the operator decides.
-			deleteMappingValue(entry, "models")
-			setMappingValue(entry, "paused", boolNode(true))
-		} else {
-			modelsVal.Content = filtered
-		}
-	}
+
 	if am := findMappingValue(root, "auto_mode"); am != nil && am.Kind == yaml.MappingNode {
 		if v := findMappingValue(am, "model"); v != nil && v.Value == modelName {
 			deleteMappingValue(root, "auto_mode")
@@ -774,9 +744,7 @@ func stripModelReferences(root *yaml.Node, modelName string) {
 		if v := findMappingValue(procs, "audio"); v != nil && v.Value == modelName {
 			deleteMappingValue(procs, "audio")
 		}
-		if v := findMappingValue(procs, "ocr"); v != nil && v.Value == modelName {
-			deleteMappingValue(procs, "ocr")
-		}
+
 	}
 }
 
@@ -797,20 +765,11 @@ func (cs *ConfigStore) UpdateProcessors(p ProcessorsConfig) error {
 			return fmt.Errorf("vision cascade references unknown model %q", v)
 		}
 	}
-	for i, e := range p.WebSearchKeys {
-		if e.Provider != "tavily" && e.Provider != "brave" {
-			return fmt.Errorf("web search key %d: provider must be tavily or brave", i+1)
-		}
-		if e.Key == "" {
-			return fmt.Errorf("web search key %d: key is empty", i+1)
-		}
-	}
+
 	if p.Audio != "" && p.Audio != "none" && !names[p.Audio] {
 		return fmt.Errorf("audio processor references unknown model %q", p.Audio)
 	}
-	if p.OCR != "" && p.OCR != "none" && !names[p.OCR] {
-		return fmt.Errorf("ocr processor references unknown model %q", p.OCR)
-	}
+
 	return cs.mutateYAML(func(root *yaml.Node) error {
 		procs := findMappingValue(root, "processors")
 		if procs == nil {
@@ -829,8 +788,6 @@ func (cs *ConfigStore) UpdateProcessors(p ProcessorsConfig) error {
 		}
 		writeField("vision", p.Vision)
 		writeField("audio", p.Audio)
-		writeField("ocr", p.OCR)
-		writeField("web_search_key", p.WebSearchKey)
 		if len(p.VisionModels) == 0 {
 			deleteMappingValue(procs, "vision_models")
 		} else {
@@ -839,18 +796,6 @@ func (cs *ConfigStore) UpdateProcessors(p ProcessorsConfig) error {
 				seq.Content = append(seq.Content, stringNode(v))
 			}
 			setMappingValue(procs, "vision_models", seq)
-		}
-		if len(p.WebSearchKeys) == 0 {
-			deleteMappingValue(procs, "web_search_keys")
-		} else {
-			seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-			for _, e := range p.WebSearchKeys {
-				m := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-				m.Content = append(m.Content, stringNode("provider"), stringNode(e.Provider))
-				m.Content = append(m.Content, stringNode("key"), stringNode(e.Key))
-				seq.Content = append(seq.Content, m)
-			}
-			setMappingValue(procs, "web_search_keys", seq)
 		}
 		return nil
 	})
@@ -928,12 +873,7 @@ func modelConfigNode(m ModelConfig) *yaml.Node {
 	if m.RewriteVision != "" {
 		add("rewrite_vision", stringNode(m.RewriteVision))
 	}
-	if m.RewriteDocuments != "" {
-		add("rewrite_documents", stringNode(m.RewriteDocuments))
-	}
-	if m.RewriteWebSearch != "" {
-		add("rewrite_web_search", stringNode(m.RewriteWebSearch))
-	}
+
 	if m.Region != "" {
 		add("region", stringNode(m.Region))
 	}
@@ -958,7 +898,7 @@ func modelConfigNode(m ModelConfig) *yaml.Node {
 	if m.Defaults != nil && !samplingDefaultsEmpty(*m.Defaults) {
 		add("defaults", samplingDefaultsNode(*m.Defaults))
 	}
-	if m.Processors != nil && (m.Processors.Vision != "" || m.Processors.OCR != "" || m.Processors.WebSearchKey != "") {
+	if m.Processors != nil && (m.Processors.Vision != "") {
 		add("processors", processorsNode(*m.Processors))
 	}
 	if len(m.ThinkingOff) > 0 {
@@ -1066,34 +1006,16 @@ func keyModelReferrers(cfg *Config, modelName string) []string {
 			}
 		}
 	}
-	for _, j := range cfg.Enrollment.JoinKeys {
-		for _, allowed := range j.Models {
-			if allowed == modelName {
-				refs = append(refs, "join key "+j.Name)
-				break
-			}
-		}
-	}
+
 	return refs
 }
 
-// joinKeyEntries returns the enrollment.join_keys mapping nodes in root.
-func joinKeyEntries(root *yaml.Node) []*yaml.Node {
-	seq := findMappingValue(findMappingValue(root, "enrollment"), "join_keys")
-	if seq == nil || seq.Kind != yaml.SequenceNode {
-		return nil
-	}
-	return seq.Content
-}
-
-// renameKeyModelReferences renames a model in API-key and join-key
-// allow-lists.
+// renameKeyModelReferences renames a model in API-key allow-lists.
 func renameKeyModelReferences(root *yaml.Node, oldName, newName string) {
 	var entries []*yaml.Node
 	if keys := findMappingValue(root, "keys"); keys != nil && keys.Kind == yaml.SequenceNode {
 		entries = keys.Content
 	}
-	entries = append(append([]*yaml.Node(nil), entries...), joinKeyEntries(root)...)
 	for _, entry := range entries {
 		models := findMappingValue(entry, "models")
 		if models == nil || models.Kind != yaml.SequenceNode {
@@ -1105,46 +1027,6 @@ func renameKeyModelReferences(root *yaml.Node, oldName, newName string) {
 			}
 		}
 	}
-}
-
-func paddleOCRNode(p PaddleOCRConfig) *yaml.Node {
-	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setMappingValue(n, "backends", backendsSeqNode(p.Backends))
-	if p.Endpoint != "" && p.Endpoint != "/layout-parsing" {
-		setMappingValue(n, "endpoint", stringNode(p.Endpoint))
-	}
-	if p.HealthEndpoint != "" && p.HealthEndpoint != "/health" {
-		setMappingValue(n, "health_endpoint", stringNode(p.HealthEndpoint))
-	}
-	if p.Timeout != 0 && p.Timeout != 300 {
-		setMappingValue(n, "timeout", intNode(p.Timeout))
-	}
-	return n
-}
-
-// UpdatePaddleOCR replaces or disables the PaddleOCR document workload.
-func (cs *ConfigStore) UpdatePaddleOCR(p *PaddleOCRConfig) error {
-	return cs.mutateYAML(func(root *yaml.Node) error {
-		docs := findMappingValue(root, "documents")
-		if p == nil {
-			if docs != nil {
-				deleteMappingValue(docs, "paddleocr")
-				if len(docs.Content) == 0 {
-					deleteMappingValue(root, "documents")
-				}
-			}
-			return nil
-		}
-		if docs == nil {
-			docs = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			setMappingValue(root, "documents", docs)
-		}
-		if docs.Kind != yaml.MappingNode {
-			return fmt.Errorf("documents section is not a mapping")
-		}
-		setMappingValue(docs, "paddleocr", paddleOCRNode(*p))
-		return nil
-	})
 }
 
 func samplingDefaultsEmpty(d SamplingDefaults) bool {
@@ -1193,11 +1075,6 @@ func processorsNode(p ProcessorsConfig) *yaml.Node {
 	if p.Vision != "" {
 		add("vision", stringNode(p.Vision))
 	}
-	if p.OCR != "" {
-		add("ocr", stringNode(p.OCR))
-	}
-	if p.WebSearchKey != "" {
-		add("web_search_key", stringNode(p.WebSearchKey))
-	}
+
 	return n
 }

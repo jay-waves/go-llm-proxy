@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · LLM Proxy</title>
+  <link rel="stylesheet" href="/assets/base.css">
+  <link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/admin">LLM Proxy</a>
+        <div class="topbar-right">
+          {{if .Setup}}<a class="nav-ext" href="/">Setup</a>{{end}}
+          <form method="post" action="/admin/logout"><button class="btn-logout" type="submit">Sign out</button></form>
+        </div>
+      </div>
+    </header>
+    <nav class="tabs-bar" aria-label="Main navigation">
+      <a class="admin-tab{{if eq .Active "usage"}} active{{end}}" {{if eq .Active "usage"}}aria-current="page"{{end}} href="/admin/usage">Overview</a>
+      <a class="admin-tab{{if eq .Active "chat"}} active{{end}}" {{if eq .Active "chat"}}aria-current="page"{{end}} href="/admin/chat">Models</a>
+      <a class="admin-tab{{if eq .Active "users"}} active{{end}}" {{if eq .Active "users"}}aria-current="page"{{end}} href="/admin/users">API keys</a>
+      <a class="admin-tab{{if eq .Active "audio"}} active{{end}}" {{if eq .Active "audio"}}aria-current="page"{{end}} href="/admin/audio">Audio</a>
+    </nav>
+    <main class="content" id="main"><div class="container{{if eq .Active "usage"}} usage-view{{end}}">{{.Body}}</div></main>
+    {{.Confirm}}
+  </div>
+  <script src="/assets/common.js"></script>
+  {{if .Script}}<script src="/assets/{{.Script}}"></script>{{end}}
+</body>
+</html>

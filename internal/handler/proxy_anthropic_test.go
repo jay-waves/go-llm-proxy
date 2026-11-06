@@ -382,36 +382,6 @@ func TestProxyAnthropicChatResendUsesMessagesProtocol(t *testing.T) {
 	}
 }
 
-func TestProxyAnthropicChatStreamingResendUsesMessagesProtocol(t *testing.T) {
-	var gotPath string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "event: message_start\n")
-		io.WriteString(w, `data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":2,"output_tokens":1}}}`+"\n\n")
-		io.WriteString(w, "event: content_block_delta\n")
-		io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"continued"}}`+"\n\n")
-		io.WriteString(w, "event: message_delta\n")
-		io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`+"\n\n")
-		io.WriteString(w, "event: message_stop\n")
-		io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
-	}))
-	defer server.Close()
-	model := &config.ModelConfig{
-		Name: "test-model", Model: "upstream-model", Type: config.BackendAnthropic,
-		Backend: server.URL, Timeout: 10,
-	}
-	proxy := &ProxyHandler{client: http.DefaultClient}
-	w := httptest.NewRecorder()
-	proxy.reStreamFromBackend(context.Background(), w, w, true, map[string]any{
-		"model": "upstream-model", "messages": []map[string]any{{"role": "user", "content": "continue"}},
-	}, model)
-
-	if gotPath != "/v1/messages" || !strings.Contains(w.Body.String(), "continued") || !strings.Contains(w.Body.String(), "data: [DONE]") {
-		t.Fatalf("path=%q body=%s", gotPath, w.Body.String())
-	}
-}
-
 func TestNativeAnthropicMessagesRouteUnaffected(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any

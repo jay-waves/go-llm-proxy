@@ -17,31 +17,12 @@ import (
 )
 
 type ProcessorsConfig struct {
-	Vision       string `yaml:"vision"`         // legacy single vision model (superseded by vision_models; kept in sync with its head)
-	Audio        string `yaml:"audio"`          // model name for audio transcription (empty = disabled; pipeline integration pending)
-	OCR          string `yaml:"ocr"`            // model name for OCR/text extraction from PDF page images (falls back to vision)
-	WebSearchKey string `yaml:"web_search_key"` // legacy single web search key (superseded by web_search_keys; kept in sync with its head)
+	Vision string `yaml:"vision"` // legacy single vision model (superseded by vision_models; kept in sync with its head)
+	Audio  string `yaml:"audio"`  // model name for audio transcription (empty = disabled; pipeline integration pending)
 
 	// VisionModels is the priority-ordered vision cascade: the first model is
 	// tried first; on failure or empty output the next takes over.
 	VisionModels []string `yaml:"vision_models,omitempty"`
-	// WebSearchKeys is the priority-ordered search-provider cascade.
-	WebSearchKeys []WebSearchKeyEntry `yaml:"web_search_keys,omitempty"`
-}
-
-// WebSearchKeyEntry is one provider+key pair in the web-search cascade.
-type WebSearchKeyEntry struct {
-	Provider string `yaml:"provider" json:"provider"` // "tavily" or "brave"
-	Key      string `yaml:"key" json:"key"`
-}
-
-// InferSearchProvider guesses the provider from a key's prefix, for legacy
-// single-key configs written before providers were explicit.
-func InferSearchProvider(key string) string {
-	if strings.HasPrefix(key, "BSA") {
-		return "brave"
-	}
-	return "tavily"
 }
 
 // EffectiveVisionModels returns the priority-ordered vision cascade, falling
@@ -52,18 +33,6 @@ func (p ProcessorsConfig) EffectiveVisionModels() []string {
 	}
 	if p.Vision != "" {
 		return []string{p.Vision}
-	}
-	return nil
-}
-
-// EffectiveSearchKeys returns the priority-ordered web-search cascade, falling
-// back to the legacy single key field for configs that predate lists.
-func (p ProcessorsConfig) EffectiveSearchKeys() []WebSearchKeyEntry {
-	if len(p.WebSearchKeys) > 0 {
-		return p.WebSearchKeys
-	}
-	if p.WebSearchKey != "" {
-		return []WebSearchKeyEntry{{Provider: InferSearchProvider(p.WebSearchKey), Key: p.WebSearchKey}}
 	}
 	return nil
 }
@@ -84,23 +53,6 @@ type AudioModelConfig struct {
 	Model    string          `yaml:"model,omitempty"`
 	Backends []BackendConfig `yaml:"backends"`
 	Timeout  int             `yaml:"timeout,omitempty"`
-}
-
-// DocumentsConfig contains document-processing workloads. PaddleOCR is the
-// only supported document adapter today, but the capability name remains
-// generic so clients do not depend on the implementation.
-type DocumentsConfig struct {
-	PaddleOCR *PaddleOCRConfig `yaml:"paddleocr,omitempty"`
-}
-
-// PaddleOCRConfig configures replicas of the official PaddleOCR layout
-// parsing service. Endpoint is the upstream request path; go-llm exposes the
-// same contract publicly at /layout-parsing.
-type PaddleOCRConfig struct {
-	Backends       []BackendConfig `yaml:"backends"`
-	Endpoint       string          `yaml:"endpoint,omitempty"`
-	HealthEndpoint string          `yaml:"health_endpoint,omitempty"`
-	Timeout        int             `yaml:"timeout,omitempty"`
 }
 
 // ConnectConfig points the proxy at an Eidonix connect hub. Backends written
@@ -149,18 +101,17 @@ func (c *Config) AutoModeModel() *ModelConfig {
 }
 
 type Config struct {
+	CORSAllowedOrigins     []string          `yaml:"cors_allowed_origins,omitempty"`
 	Listen                 string            `yaml:"listen"`
 	MaxRequestBodyMB       int               `yaml:"max_request_body_mb,omitempty"` // request body limit in MB (0 = DefaultMaxRequestBodyMB)
 	Models                 []ModelConfig     `yaml:"models"`
 	Aliases                map[string]string `yaml:"aliases,omitempty"` // client-facing alias -> canonical model name
 	Keys                   []KeyConfig       `yaml:"keys"`
-	Services               ServicesConfig    `yaml:"services"`                  // external service proxies (Qdrant, etc.)
 	Processors             ProcessorsConfig  `yaml:"processors"`                // global processor defaults
 	Audio                  AudioConfig       `yaml:"audio,omitempty"`           // transcription and text-to-speech workloads
-	Documents              DocumentsConfig   `yaml:"documents,omitempty"`       // native document-processing workloads
 	TrustedProxies         []string          `yaml:"trusted_proxies"`           // CIDR or IPs allowed to set X-Real-IP
 	ServeConfigGenerator   bool              `yaml:"serve_config_generator"`    // enable the config generator page at GET /
-	LogMetrics             bool              `yaml:"log_metrics"`               // enable per-request usage logging to SQLite
+	LogMetrics             bool              `yaml:"log_metrics"`               // enable daily-aggregated usage statistics in SQLite
 	UsageDB                string            `yaml:"usage_db"`                  // path to SQLite usage database (default: usage.db)
 	UsageDashboard         bool              `yaml:"usage_dashboard"`           // enable the usage dashboard at /usage
 	UsageDashboardPassword string            `yaml:"usage_dashboard_password"`  // password for the usage dashboard
@@ -169,7 +120,6 @@ type Config struct {
 	HealthInterval         int               `yaml:"health_interval,omitempty"` // seconds between backend health probes (default 30)
 	AutoMode               *AutoModeConfig   `yaml:"auto_mode,omitempty"`       // Claude Code auto-mode classifier interception
 	ClientDefaults         *ClientDefaults   `yaml:"client_defaults,omitempty"` // recommended models for clients such as code-link
-	Enrollment             EnrollmentConfig  `yaml:"enrollment,omitempty"`      // self-service API keys by email (enrollment.go)
 }
 
 // ClientDefaults are the models a client that sets itself up from this
@@ -275,24 +225,22 @@ type SamplingDefaults struct {
 
 type ModelConfig struct {
 	Name             string            `yaml:"name"`
-	Backends         []BackendConfig   `yaml:"backends"`                     // all replicas serving this logical model
-	Model            string            `yaml:"model"`                        // model name to send to the backend (if different from Name)
-	Timeout          int               `yaml:"timeout"`                      // request timeout in seconds (default 300)
-	Type             string            `yaml:"type"`                         // backend type: "" or "openai" (default), "anthropic"
-	ResponsesMode    string            `yaml:"responses_mode"`               // "auto" (default), "native", or "translate"
-	MessagesMode     string            `yaml:"messages_mode"`                // "auto" (default), "native", or "translate"
-	NativeClassifier bool              `yaml:"native_classifier,omitempty"`  // send Claude Code auto-mode classifier requests to the backend's /v1/messages unchanged (needs a Messages-capable backend)
-	DeveloperRole    string            `yaml:"developer_role,omitempty"`     // Responses translation: role for developer messages that follow the first user/assistant turn — "user" (default, wrapped in <developer> tags), "system", or "developer"
-	ContextWindow    int               `yaml:"context_window"`               // max context tokens (0 = auto-detect from backend)
-	SupportsVision   bool              `yaml:"supports_vision"`              // model handles images natively
-	SupportsAudio    bool              `yaml:"supports_audio"`               // model handles audio (transcription or audio input)
-	CodeLink         bool              `yaml:"code_link,omitempty"`          // offered in code-link's model lists (GET /v1/capabilities)
-	ForcePipeline    bool              `yaml:"force_pipeline,omitempty"`     // deprecated: use RewriteVision/RewriteWebSearch "on" instead; still honored as legacy "force both on"
-	RewriteVision    string            `yaml:"rewrite_vision,omitempty"`     // "" (auto by protocol), "on", or "off" — image_url content only
-	RewriteDocuments string            `yaml:"rewrite_documents,omitempty"`  // "" (auto by protocol), "on", or "off" — pdf_data content only
-	RewriteWebSearch string            `yaml:"rewrite_web_search,omitempty"` // "" (auto by protocol), "on", or "off"
-	Processors       *ProcessorsConfig `yaml:"processors"`                   // per-model processor overrides (nil = use global)
-	Defaults         *SamplingDefaults `yaml:"defaults"`                     // default sampling parameters (nil = use backend defaults)
+	Backends         []BackendConfig   `yaml:"backends"`                    // all replicas serving this logical model
+	Model            string            `yaml:"model"`                       // model name to send to the backend (if different from Name)
+	Timeout          int               `yaml:"timeout"`                     // request timeout in seconds (default 300)
+	Type             string            `yaml:"type"`                        // backend type: "" or "openai" (default), "anthropic"
+	ResponsesMode    string            `yaml:"responses_mode"`              // "auto" (default), "native", or "translate"
+	MessagesMode     string            `yaml:"messages_mode"`               // "auto" (default), "native", or "translate"
+	NativeClassifier bool              `yaml:"native_classifier,omitempty"` // send Claude Code auto-mode classifier requests to the backend's /v1/messages unchanged (needs a Messages-capable backend)
+	DeveloperRole    string            `yaml:"developer_role,omitempty"`    // Responses translation: role for developer messages that follow the first user/assistant turn — "user" (default, wrapped in <developer> tags), "system", or "developer"
+	ContextWindow    int               `yaml:"context_window"`              // max context tokens (0 = auto-detect from backend)
+	SupportsVision   bool              `yaml:"supports_vision"`             // model handles images natively
+	SupportsAudio    bool              `yaml:"supports_audio"`              // model handles audio (transcription or audio input)
+	CodeLink         bool              `yaml:"code_link,omitempty"`         // offered in code-link's model lists (GET /v1/capabilities)
+	ForcePipeline    bool              `yaml:"force_pipeline,omitempty"`    // deprecated: use RewriteVision "on" instead; still honored as legacy image rewrite
+	RewriteVision    string            `yaml:"rewrite_vision,omitempty"`    // "" (auto by protocol), "on", or "off" — image_url content only
+	Processors       *ProcessorsConfig `yaml:"processors"`                  // per-model processor overrides (nil = use global)
+	Defaults         *SamplingDefaults `yaml:"defaults"`                    // default sampling parameters (nil = use backend defaults)
 	// ThinkingOff is a raw object merged into the Chat Completions request
 	// when a Messages client (Claude Code) sends thinking.type "disabled".
 	// Backends spell "no reasoning" differently, so the operator supplies the
@@ -327,29 +275,6 @@ type KeyConfig struct {
 	Key    string   `yaml:"key"`
 	Name   string   `yaml:"name"`   // friendly name for logging
 	Models []string `yaml:"models"` // allowed models, empty = all
-	// Email and JoinKey are set on keys issued by self-service enrollment:
-	// the owner's lowercase address (one key per address) and the id of the
-	// join key it came through.
-	Email   string `yaml:"email,omitempty"`
-	JoinKey string `yaml:"join_key,omitempty"`
-}
-
-// ServicesConfig contains configuration for external services proxied by the server.
-type ServicesConfig struct {
-	Qdrant *QdrantConfig `yaml:"qdrant"`
-}
-
-// QdrantConfig configures the Qdrant vector database proxy.
-type QdrantConfig struct {
-	Backend string         `yaml:"backend"` // Qdrant server URL e.g. http://192.168.5.143:6333
-	APIKey  string         `yaml:"api_key"` // API key to send to Qdrant backend
-	AppKeys []AppKeyConfig `yaml:"app_keys"`
-}
-
-// AppKeyConfig defines an application key for service access.
-type AppKeyConfig struct {
-	Name string `yaml:"name"` // friendly name for logging
-	Key  string `yaml:"key"`  // the actual API key
 }
 
 // ConfigStore provides thread-safe access to the current config.
@@ -555,17 +480,6 @@ func finalizeConfig(cfg *Config) error {
 			audio.Timeout = 300
 		}
 	}
-	if doc := cfg.Documents.PaddleOCR; doc != nil {
-		if doc.Endpoint == "" {
-			doc.Endpoint = "/layout-parsing"
-		}
-		if doc.HealthEndpoint == "" {
-			doc.HealthEndpoint = "/health"
-		}
-		if doc.Timeout == 0 {
-			doc.Timeout = 300
-		}
-	}
 
 	if err := validateConfig(cfg); err != nil {
 		return err
@@ -690,6 +604,9 @@ func GlobMatch(pattern, name string) bool {
 }
 
 func validateConfig(cfg *Config) error {
+	if err := validateCORSOrigins(cfg.CORSAllowedOrigins); err != nil {
+		return err
+	}
 	if len(cfg.Keys) == 0 {
 		slog.Warn("no API keys configured — all requests will be unauthenticated")
 	}
@@ -782,16 +699,7 @@ func validateConfig(cfg *Config) error {
 		default:
 			return fmt.Errorf("model %q has unknown rewrite_vision %q (must be \"on\", \"off\", or omitted)", m.Name, m.RewriteVision)
 		}
-		switch m.RewriteDocuments {
-		case "", "on", "off":
-		default:
-			return fmt.Errorf("model %q has unknown rewrite_documents %q (must be \"on\", \"off\", or omitted)", m.Name, m.RewriteDocuments)
-		}
-		switch m.RewriteWebSearch {
-		case "", "on", "off":
-		default:
-			return fmt.Errorf("model %q has unknown rewrite_web_search %q (must be \"on\", \"off\", or omitted)", m.Name, m.RewriteWebSearch)
-		}
+
 		switch m.ResponsesMode {
 		case "", "auto", ResponsesModeNative, ResponsesModeTranslate:
 		default:
@@ -889,24 +797,6 @@ func validateConfig(cfg *Config) error {
 		names[audio.Name] = true
 	}
 
-	if doc := cfg.Documents.PaddleOCR; doc != nil {
-		if len(doc.Backends) == 0 {
-			return fmt.Errorf("documents.paddleocr has no backends")
-		}
-		if err := validateBackendList("documents.paddleocr", doc.Backends); err != nil {
-			return err
-		}
-		if doc.Endpoint == "" || doc.Endpoint[0] != '/' {
-			return fmt.Errorf("documents.paddleocr endpoint must be an absolute path")
-		}
-		if doc.HealthEndpoint == "" || doc.HealthEndpoint[0] != '/' {
-			return fmt.Errorf("documents.paddleocr health_endpoint must be an absolute path")
-		}
-		if doc.Timeout < 1 {
-			return fmt.Errorf("documents.paddleocr timeout must be positive")
-		}
-	}
-
 	// Validate global vision processor references a defined model.
 	if v := cfg.Processors.Vision; v != "" {
 		if !names[v] {
@@ -916,21 +806,6 @@ func validateConfig(cfg *Config) error {
 	for _, v := range cfg.Processors.VisionModels {
 		if !names[v] {
 			return fmt.Errorf("processors.vision_models references unknown model %q", v)
-		}
-	}
-	for i, e := range cfg.Processors.WebSearchKeys {
-		if e.Provider != "tavily" && e.Provider != "brave" {
-			return fmt.Errorf("processors.web_search_keys[%d]: provider must be tavily or brave", i)
-		}
-		if e.Key == "" {
-			return fmt.Errorf("processors.web_search_keys[%d]: key is empty", i)
-		}
-	}
-
-	// Validate global OCR processor references a defined model.
-	if v := cfg.Processors.OCR; v != "" && v != "none" {
-		if !names[v] {
-			return fmt.Errorf("global processors.ocr references unknown model %q", v)
 		}
 	}
 
@@ -948,11 +823,7 @@ func validateConfig(cfg *Config) error {
 				return fmt.Errorf("model %q processors.vision references unknown model %q", m.Name, m.Processors.Vision)
 			}
 		}
-		if m.Processors != nil && m.Processors.OCR != "" && m.Processors.OCR != "none" {
-			if !names[m.Processors.OCR] {
-				return fmt.Errorf("model %q processors.ocr references unknown model %q", m.Name, m.Processors.OCR)
-			}
-		}
+
 	}
 
 	// Auto-infer SupportsVision: any model referenced as a vision processor
@@ -999,34 +870,6 @@ func validateConfig(cfg *Config) error {
 			if !names[m] {
 				return fmt.Errorf("key %q references unknown model %q", k.Name, m)
 			}
-		}
-	}
-
-	if err := validateEnrollment(cfg, names); err != nil {
-		return err
-	}
-
-	// Validate Qdrant service config.
-	if q := cfg.Services.Qdrant; q != nil {
-		if q.Backend == "" {
-			return fmt.Errorf("services.qdrant missing backend")
-		}
-		if err := validateBackendURL("services.qdrant", q.Backend); err != nil {
-			return err
-		}
-
-		appKeys := make(map[string]bool)
-		for _, ak := range q.AppKeys {
-			if ak.Key == "" {
-				return fmt.Errorf("services.qdrant app_key entry missing key value")
-			}
-			if ak.Name == "" {
-				return fmt.Errorf("services.qdrant app_key entry missing name")
-			}
-			if appKeys[ak.Key] {
-				return fmt.Errorf("services.qdrant duplicate app_key for %q", ak.Name)
-			}
-			appKeys[ak.Key] = true
 		}
 	}
 

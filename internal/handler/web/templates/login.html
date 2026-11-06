@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · LLM Proxy</title>
+  <link rel="stylesheet" href="/assets/base.css">
+</head>
+<body class="auth-body">
+  <main class="auth-card">
+    <h1>LLM Proxy</h1>
+    {{if .Error}}<div class="error-notice" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="/admin/login">
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autofocus autocomplete="current-password" required>
+      </div>
+      <button class="btn btn-primary" type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

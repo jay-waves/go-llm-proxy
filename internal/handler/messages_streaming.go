@@ -2,11 +2,10 @@ package handler
 
 import (
 	"bufio"
-	"bytes"
-	"context"
+
 	"encoding/json"
 	"fmt"
-	"io"
+
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"go-llm-proxy/internal/api"
 	"go-llm-proxy/internal/config"
 	"go-llm-proxy/internal/httputil"
-	"go-llm-proxy/internal/pipeline"
 )
 
 // msgToolCallState tracks a tool call during Anthropic Messages streaming.
@@ -178,28 +176,11 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 	}
 
 	// Determine if search buffering is needed.
-	searchEnabled := h.pipeline != nil && h.pipeline.ResolveWebSearchKey(model) != ""
 
 	// bufferedEvent stores tool call events that may need to be replayed or discarded.
-	type bufferedEvent struct {
-		eventType string
-		data      map[string]any
-	}
-	var toolCallBuffer []bufferedEvent
-	toolCallBlockIndexStart := 0 // blockIndex when first tool call was seen
-
-	bufferOrEmit := func(eventType string, data map[string]any) {
-		if searchEnabled {
-			toolCallBuffer = append(toolCallBuffer, bufferedEvent{eventType, data})
-		} else {
-			emit(eventType, data)
-		}
-	}
 
 	// Note: block closing after buffer replay uses emit() directly instead of
 	// bufferOrEmit to avoid re-buffering stop events. See the replay sections below.
-
-	var accumulatedContent strings.Builder
 
 	// Think-tag filter: strips <think>...</think> from content and routes to reasoning.
 	var thinkFilter thinkTagFilter
@@ -264,7 +245,6 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 			if !textBlockOpen {
 				openTextBlock()
 			}
-			accumulatedContent.WriteString(text)
 			emit("content_block_delta", map[string]any{
 				"index": blockIndex,
 				"delta": map[string]any{"type": "text_delta", "text": text},
@@ -296,7 +276,6 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 				closeTextBlock()
 
 				if len(toolCalls) == 0 {
-					toolCallBlockIndexStart = blockIndex
 				}
 				sawToolCalls = true
 
@@ -319,7 +298,7 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 				}
 				toolCalls[tc.Index] = tcs
 
-				bufferOrEmit("content_block_start", map[string]any{
+				emit("content_block_start", map[string]any{
 					"index": blockIndex,
 					"content_block": map[string]any{
 						"type":  "tool_use",
@@ -336,7 +315,7 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 				if tc.Index < len(toolCalls) && toolCalls[tc.Index] != nil {
 					tcs := toolCalls[tc.Index]
 					tcs.args.WriteString(tc.Function.Arguments)
-					bufferOrEmit("content_block_delta", map[string]any{
+					emit("content_block_delta", map[string]any{
 						"index": tcs.blockIndex,
 						"delta": map[string]any{
 							"type":         "input_json_delta",
@@ -375,7 +354,6 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 			if !textBlockOpen {
 				openTextBlock()
 			}
-			accumulatedContent.WriteString(seg.Text)
 			emit("content_block_delta", map[string]any{
 				"index": blockIndex,
 				"delta": map[string]any{"type": "text_delta", "text": seg.Text},
@@ -385,120 +363,8 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 
 	// Check for streaming search loop: if search is enabled, finish_reason is tool_calls,
 	// and all tool calls are web_search, execute the search and re-stream from backend.
-	if searchEnabled && finishReason == "tool_calls" && len(toolCalls) > 0 {
-		allSearch := true
-		for _, tc := range toolCalls {
-			if tc != nil && tc.name != "web_search" {
-				allSearch = false
-				break
-			}
-		}
-
-		if allSearch {
-			// Build chatChoiceToolCalls from accumulated state.
-			var searchCalls []api.ChatChoiceToolCall
-			for _, tc := range toolCalls {
-				if tc == nil {
-					continue
-				}
-				searchCalls = append(searchCalls, api.ChatChoiceToolCall{
-					ID:   tc.callID,
-					Type: "function",
-					Function: struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					}{Name: tc.name, Arguments: tc.args.String()},
-				})
-			}
-
-			// Emit keepalive comments during search execution.
-			searchDone := make(chan struct{})
-			var newChatReq map[string]any
-			var searchResults []pipeline.SearchCallResult
-			var searchErr error
-
-			go func() {
-				defer close(searchDone)
-				newChatReq, searchResults, searchErr = h.pipeline.ExecuteSearchAndResend(
-					ctx, chatReq, model, searchCalls, accumulatedContent.String())
-			}()
-
-			completed := waitForSearchOrDisconnect(ctx, searchDone,
-				func() { writeRaw(": searching\n\n") },
-				2*time.Second, 5*time.Second, "messages streaming")
-			if !completed {
-				// Client disconnected; goroutine awaited. Stop emitting.
-				return
-			}
-
-			if searchErr != nil {
-				slog.Warn("streaming search execution failed", "error", searchErr)
-			} else if newChatReq != nil {
-				// Reset tool call state, re-stream from backend.
-				blockIndex = toolCallBlockIndexStart
-				toolCalls = nil
-				toolCallBuffer = nil
-
-				// Emit server_tool_use + web_search_tool_result blocks so clients
-				// (Claude Code) can display search results in their UI.
-				blockIndex = emitSearchResultBlocks(emit, blockIndex, searchResults)
-
-				// emitReasoningChunk for re-stream path - same logic as main handler.
-				emitReasoningChunk := func(text string) {
-					if !reasoningBlockOpen {
-						openReasoningBlock()
-					}
-					emit("content_block_delta", map[string]any{
-						"index": blockIndex,
-						"delta": map[string]any{"type": "thinking_delta", "thinking": text},
-					})
-				}
-				newFinish, newUsage, newTC := h.streamFromBackend(ctx, w, flusher, newChatReq, model,
-					blockIndex, &textBlockOpen, openTextBlock, closeTextBlock, emit,
-					emitReasoningChunk, &thinkFilter)
-				if newFinish != "" {
-					finishReason = newFinish
-				}
-				if newUsage != nil {
-					usageData = newUsage
-				}
-				toolCalls = newTC
-				sawToolCalls = false
-				for _, tc := range newTC {
-					if tc != nil {
-						sawToolCalls = true
-					}
-				}
-				// Update blockIndex past any new blocks opened.
-				for _, tc := range toolCalls {
-					if tc != nil && tc.blockIndex >= blockIndex {
-						blockIndex = tc.blockIndex + 1
-					}
-				}
-			}
-
-			// Fall through to normal terminal event emission.
-		} else {
-			// Mixed or non-search tool calls: replay buffered events and close.
-			// Emit stop events directly — bufferOrEmit would re-buffer them.
-			slog.Debug("replaying buffered tool call events (non-search)", "count", len(toolCallBuffer))
-			for _, ev := range toolCallBuffer {
-				emit(ev.eventType, ev.data)
-			}
-			closeReasoningBlock()
-			closeTextBlock()
-			for _, tc := range toolCalls {
-				if tc != nil {
-					emit("content_block_stop", map[string]any{"index": tc.blockIndex})
-				}
-			}
-			toolCalls = nil // Already closed — prevent terminal double-close.
-		}
-	} else {
+	{
 		// Not a search case: replay any buffered events and close directly.
-		for _, ev := range toolCallBuffer {
-			emit(ev.eventType, ev.data)
-		}
 		closeReasoningBlock()
 		closeTextBlock()
 		for _, tc := range toolCalls {
@@ -568,211 +434,6 @@ func (h *MessagesHandler) handleStreaming(w http.ResponseWriter, resp *http.Resp
 		backend:      model.Backend,
 		requestBytes: requestBytes, responseBytes: responseBytes,
 	}, usageData)
-}
-
-// streamFromBackend sends a streaming Chat Completions request and translates the SSE
-// chunks into Anthropic Messages content blocks (text and tool_use), emitting them via
-// the provided emit function. This is used for the search re-stream path so the
-// streaming parser logic exists in exactly one place.
-//
-// Returns the finish_reason, final usage, and any tool calls accumulated during the stream.
-func (h *MessagesHandler) streamFromBackend(
-	ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
-	chatReq map[string]any, model *config.ModelConfig,
-	startBlockIndex int, textBlockOpen *bool,
-	openTextBlock func(), closeTextBlock func(),
-	emit func(string, map[string]any),
-	emitReasoningChunk func(string), thinkFilter *thinkTagFilter,
-) (finishReason string, usageData *api.ChunkUsage, toolCalls []*msgToolCallState) {
-
-	chatReq["stream"] = true
-	chatReq["stream_options"] = map[string]any{"include_usage": true}
-	model.ApplySamplingDefaults(chatReq)
-	newBody, err := json.Marshal(chatReq)
-	if err != nil {
-		slog.Error("streaming search: failed to marshal re-send request", "error", err)
-		return
-	}
-
-	upstreamURL := strings.TrimRight(model.Backend, "/") + api.ChatCompletionsPath
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(newBody))
-	if err != nil {
-		slog.Error("streaming search: failed to build re-send request", "error", err)
-		return
-	}
-	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("Accept", "text/event-stream")
-	if model.APIKey != "" {
-		upReq.Header.Set("Authorization", "Bearer "+model.APIKey)
-	}
-
-	resp, err := h.client.Do(upReq)
-	if err != nil {
-		slog.Error("streaming search: re-send request failed", "error", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		slog.Error("streaming search: backend returned error on re-send",
-			"status", resp.StatusCode, "body", string(errBody))
-		return
-	}
-
-	blockIndex := startBlockIndex
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), maxSSELineSize)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := line[6:]
-		if data == "[DONE]" {
-			break
-		}
-		var chunk api.ChatChunk
-		if json.Unmarshal([]byte(data), &chunk) != nil {
-			continue
-		}
-		if chunk.Usage != nil {
-			usageData = chunk.Usage
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		choice := chunk.Choices[0]
-		delta := choice.Delta
-
-		// Handle reasoning_content field (same as main handler).
-		if r := delta.EffectiveReasoning(); r != nil && *r != "" {
-			emitReasoningChunk(*r)
-		}
-
-		// Handle content with think tag filtering (same as main handler).
-		if delta.Content != nil && *delta.Content != "" {
-			for _, seg := range thinkFilter.Process(*delta.Content) {
-				if seg.IsReasoning {
-					emitReasoningChunk(seg.Text)
-				} else {
-					if !*textBlockOpen {
-						openTextBlock()
-					}
-					emit("content_block_delta", map[string]any{
-						"index": blockIndex,
-						"delta": map[string]any{"type": "text_delta", "text": seg.Text},
-					})
-				}
-			}
-		}
-
-		for _, tc := range delta.ToolCalls {
-			if startsNewToolCall(toolCalls, tc) {
-				closeTextBlock()
-				name := ""
-				if tc.Function != nil {
-					name = tc.Function.Name
-				}
-				callID := tc.ID
-				if callID == "" {
-					callID = api.RandomID("call_")
-				}
-				tcs := &msgToolCallState{
-					callID:     callID,
-					name:       name,
-					blockIndex: blockIndex,
-				}
-				for len(toolCalls) <= tc.Index {
-					toolCalls = append(toolCalls, nil)
-				}
-				toolCalls[tc.Index] = tcs
-				emit("content_block_start", map[string]any{
-					"index": blockIndex,
-					"content_block": map[string]any{
-						"type":  "tool_use",
-						"id":    callID,
-						"name":  name,
-						"input": map[string]any{},
-					},
-				})
-				blockIndex++
-			}
-			if tc.Function != nil && tc.Function.Arguments != "" {
-				if tc.Index < len(toolCalls) && toolCalls[tc.Index] != nil {
-					tcs := toolCalls[tc.Index]
-					tcs.args.WriteString(tc.Function.Arguments)
-					emit("content_block_delta", map[string]any{
-						"index": tcs.blockIndex,
-						"delta": map[string]any{
-							"type":         "input_json_delta",
-							"partial_json": tc.Function.Arguments,
-						},
-					})
-				}
-			}
-		}
-
-		if choice.FinishReason != nil {
-			finishReason = *choice.FinishReason
-		}
-	}
-	return
-}
-
-// emitSearchResultBlocks injects Anthropic-format server_tool_use and
-// web_search_tool_result content blocks into the SSE stream. This allows
-// clients like Claude Code to display search results in their UI
-// (e.g., "Did N searches in Xs").
-//
-// Returns the updated blockIndex after all blocks have been emitted.
-func emitSearchResultBlocks(emit func(string, map[string]any), blockIndex int, results []pipeline.SearchCallResult) int {
-	for _, sr := range results {
-		if sr.Error != "" {
-			continue // Skip failed searches — no results to show.
-		}
-
-		toolUseID := sr.ToolUseID
-		if toolUseID == "" {
-			toolUseID = api.RandomID("srvtoolu_")
-		}
-
-		// server_tool_use block: signals a search was initiated.
-		emit("content_block_start", map[string]any{
-			"index": blockIndex,
-			"content_block": map[string]any{
-				"type":  "server_tool_use",
-				"id":    toolUseID,
-				"name":  "web_search_20250305",
-				"input": map[string]any{"query": sr.Query},
-			},
-		})
-		emit("content_block_stop", map[string]any{"index": blockIndex})
-		blockIndex++
-
-		// web_search_tool_result block: contains the actual search hits.
-		resultContent := make([]any, 0, len(sr.Hits))
-		for _, hit := range sr.Hits {
-			resultContent = append(resultContent, map[string]any{
-				"type":  "web_search_result",
-				"title": hit.Title,
-				"url":   hit.URL,
-			})
-		}
-		emit("content_block_start", map[string]any{
-			"index": blockIndex,
-			"content_block": map[string]any{
-				"type":        "web_search_tool_result",
-				"tool_use_id": toolUseID,
-				"content":     resultContent,
-			},
-		})
-		emit("content_block_stop", map[string]any{"index": blockIndex})
-		blockIndex++
-	}
-	return blockIndex
 }
 
 // startsNewToolCall reports whether a tool-call delta opens a new tool_use

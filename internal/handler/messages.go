@@ -157,8 +157,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// requestTimeout and disarmIfStream).
 	ctx, cancel, disarmTimeout := armUntilHeaders(r.Context(), model)
 	defer cancel()
-	// One search budget for every round of this request's search loop.
-	ctx = pipeline.WithSearchBudget(ctx, pipeline.AnthropicWebSearchMaxUses(req.Tools))
 
 	// AWS Bedrock backends use the Converse API (translated from Anthropic
 	// Messages, signed with SigV4 or a Bedrock API key) instead of Chat
@@ -197,7 +195,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// large PDF is extracted.
 	headersAlreadySent := false
 	if h.pipeline != nil && h.pipeline.ShouldProcess(model) {
-		if req.Stream && (pipeline.RequestContainsImageURLs(chatReq) || pipeline.RequestContainsPDFData(chatReq)) {
+		if req.Stream && pipeline.RequestContainsImageURLs(chatReq) {
 			chatReq, headersAlreadySent, err = runPipelineWithKeepalives(ctx, w, h.pipeline, chatReq, model)
 		} else {
 			chatReq, err = h.pipeline.ProcessRequest(ctx, chatReq, model)
@@ -213,11 +211,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	// No backend accepts the internal pdf_data / document_url parts. Anything
-	// the pipeline left behind (documents rewriting off) becomes an OpenAI file
 	// part or a placeholder.
-	pipeline.ConvertPDFDataToFileParts(chatReq)
 
 	// Check if the client disconnected during pipeline processing (e.g. vision
 	// calls can take 30+ seconds, and the client may have given up waiting).
@@ -490,21 +484,6 @@ func (h *MessagesHandler) handleNonStreaming(w http.ResponseWriter, resp *http.R
 	if err := json.Unmarshal(body, &chatResp); err != nil {
 		httputil.WriteAnthropicError(w, http.StatusBadGateway, "api_error", "invalid upstream response")
 		return
-	}
-
-	// Search tool loop: if the response calls web_search, execute and re-send.
-	if h.pipeline != nil && len(chatResp.Choices) > 0 && pipeline.HasSearchToolCall(chatResp.Choices[0].Message.ToolCalls) {
-		ctx := resp.Request.Context()
-		finalResp, err := h.pipeline.HandleNonStreamingSearchLoop(ctx, chatReq, model, &chatResp,
-			func(req map[string]any) (*api.ChatResponse, error) {
-				return h.sendChatRequest(ctx, req, model)
-			}, 5)
-		if err != nil {
-			slog.Error("search processing failed", "model", req.Model, "error", err)
-			httputil.WriteAnthropicError(w, http.StatusBadGateway, "api_error", "search processing failed")
-			return
-		}
-		chatResp = *finalResp
 	}
 
 	respID := api.RandomID("msg_")

@@ -74,7 +74,7 @@ func newBackendRef(url, apiKey, typ string) *backendRef {
 }
 
 // collectBackendRefs builds the set of unique backend URLs across chat, audio,
-// and document workloads, remembering which chat models each URL serves.
+// workloads, remembering which chat models each URL serves.
 func collectBackendRefs(cfg *Config) map[string]*backendRef {
 	refs := make(map[string]*backendRef)
 	for i := range cfg.Models {
@@ -107,9 +107,7 @@ func collectBackendRefs(cfg *Config) map[string]*backendRef {
 	if cfg.Audio.TTS != nil {
 		addWorkload(cfg.Audio.TTS.Backends)
 	}
-	if cfg.Documents.PaddleOCR != nil {
-		addWorkload(cfg.Documents.PaddleOCR.Backends)
-	}
+
 	return refs
 }
 

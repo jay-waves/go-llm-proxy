@@ -221,12 +221,11 @@ func TestProxyHandler_OpenAIUpstreamPath(t *testing.T) {
 
 // Anthropic path/prefix tests moved to messages_test.go (MessagesHandler).
 
-// newTestProxyHandlerWithSearch creates a ProxyHandler with search enabled.
-func newTestProxyHandlerWithSearch(t *testing.T, upstream http.HandlerFunc) (*ProxyHandler, *httptest.Server) {
+// newTestProxyHandlerWithPipeline creates a ProxyHandler with the image pipeline.
+func newTestProxyHandlerWithPipeline(t *testing.T, upstream http.HandlerFunc) (*ProxyHandler, *httptest.Server) {
 	t.Helper()
 	ts := httptest.NewServer(upstream)
 	cfg := &config.Config{
-		Processors: config.ProcessorsConfig{WebSearchKey: "tvly-test"},
 		Models: []config.ModelConfig{{
 			Name: "test-model", Backend: ts.URL + "/v1", APIKey: "secret",
 			Model: "test-model", Timeout: 30,
@@ -240,7 +239,7 @@ func newTestProxyHandlerWithSearch(t *testing.T, upstream http.HandlerFunc) (*Pr
 func TestProxyHandler_StreamingPassthrough_NoToolCalls(t *testing.T) {
 	// Backend returns a normal streaming response with no tool calls.
 	// Search is enabled, but the response should pass through cleanly.
-	proxy, ts := newTestProxyHandlerWithSearch(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy, ts := newTestProxyHandlerWithPipeline(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
@@ -280,7 +279,7 @@ func TestProxyHandler_StreamingPassthrough_NoToolCalls(t *testing.T) {
 func TestProxyHandler_StreamingReplay_NonSearchToolCalls(t *testing.T) {
 	// Backend returns a tool call that is NOT web_search (e.g., "bash").
 	// Search is enabled but the tool call should be replayed to client, not intercepted.
-	proxy, ts := newTestProxyHandlerWithSearch(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy, ts := newTestProxyHandlerWithPipeline(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
@@ -321,7 +320,7 @@ func TestProxyHandler_StreamingReplay_NonSearchToolCalls(t *testing.T) {
 
 func TestProxyHandler_NonStreaming_UnparseableResponse(t *testing.T) {
 	// Backend returns non-JSON response. Search is enabled but should fall back to raw passthrough.
-	proxy, ts := newTestProxyHandlerWithSearch(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy, ts := newTestProxyHandlerWithPipeline(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("not json at all"))

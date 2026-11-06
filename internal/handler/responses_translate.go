@@ -492,125 +492,9 @@ func translateContentForChat(content json.RawMessage, role string) any {
 	return ""
 }
 
-// translateInputImage converts an input_image part. A PDF masquerading as an
-// image (Codex and other clients sometimes submit PDFs this way, with a
-// data:application/pdf URL) becomes the pipeline-internal pdf_data part so it
-// gets the full text/OCR/vision cascade instead of the image pipeline.
-func translateInputImage(p map[string]json.RawMessage) map[string]any {
-	var url string
-	json.Unmarshal(p["image_url"], &url)
-	if data, ok := pipeline.DecodePDFDataURL(url); ok {
-		var fn string
-		json.Unmarshal(p["filename"], &fn)
-		return pdfDataPart(data, fn)
-	}
-	part := map[string]any{
-		"type":      "image_url",
-		"image_url": map[string]any{"url": url},
-	}
-	if detail, ok := p["detail"]; ok {
-		var d string
-		json.Unmarshal(detail, &d)
-		if d != "" {
-			part["image_url"].(map[string]any)["detail"] = d
-		}
-	}
-	return part
-}
-
-// translateInputFile converts a Responses input_file part. Inline PDFs
-// (file_data as a data URL or bare base64) become the pipeline-internal
-// pdf_data part; other inline files become a Chat Completions `file` part.
-// Files referenced by id or URL cannot be read here and become a short text
-// note so the model knows something was attached.
-func translateInputFile(p map[string]json.RawMessage) map[string]any {
-	var fileData, filename string
-	json.Unmarshal(p["file_data"], &fileData)
-	json.Unmarshal(p["filename"], &filename)
-
-	if fileData == "" {
-		label := filename
-		if label == "" {
-			label = "unnamed file"
-		}
-		return map[string]any{
-			"type": "text",
-			"text": fmt.Sprintf("[attached file %q could not be read: only inline file_data is supported]", label),
-		}
-	}
-
-	if data, ok := pipeline.DecodePDFDataURL(fileData); ok {
-		return pdfDataPart(data, filename)
-	}
-	if !strings.HasPrefix(fileData, "data:") {
-		// Bare base64: a PDF if the name says so or the payload starts with
-		// "%PDF-" (base64 "JVBERi").
-		if strings.HasSuffix(strings.ToLower(filename), ".pdf") || strings.HasPrefix(fileData, "JVBERi") {
-			return pdfDataPart(fileData, filename)
-		}
-	}
-	file := map[string]any{"file_data": fileData}
-	if filename != "" {
-		file["filename"] = filename
-	}
-	return map[string]any{"type": "file", "file": file}
-}
-
-func pdfDataPart(b64, filename string) map[string]any {
-	part := map[string]any{"type": "pdf_data", "data": b64}
-	if filename != "" {
-		part["filename"] = filename
-	}
-	return part
-}
-
-// downgradePDFData rewrites any pdf_data part still present in the request
 // (the pipeline did not run or left it alone) into the OpenAI Chat Completions
 // `file` part, so a backend with native PDF support still receives it and the
 // internal marker never leaks upstream.
-func downgradePDFData(chatReq map[string]any) {
-	var messages []map[string]any
-	switch m := chatReq["messages"].(type) {
-	case []map[string]any:
-		messages = m
-	case []any:
-		for _, x := range m {
-			if mm, ok := x.(map[string]any); ok {
-				messages = append(messages, mm)
-			}
-		}
-	default:
-		return
-	}
-	convert := func(part map[string]any) map[string]any {
-		if part["type"] != "pdf_data" {
-			return part
-		}
-		data, _ := part["data"].(string)
-		fn, _ := part["filename"].(string)
-		if fn == "" {
-			fn = "document.pdf"
-		}
-		return map[string]any{"type": "file", "file": map[string]any{
-			"filename":  fn,
-			"file_data": "data:application/pdf;base64," + data,
-		}}
-	}
-	for _, msg := range messages {
-		switch c := msg["content"].(type) {
-		case []map[string]any:
-			for i, part := range c {
-				c[i] = convert(part)
-			}
-		case []any:
-			for i, p := range c {
-				if part, ok := p.(map[string]any); ok {
-					c[i] = convert(part)
-				}
-			}
-		}
-	}
-}
 
 // --- Tool output translation ---
 
@@ -1017,6 +901,9 @@ func translateTextFormat(text json.RawMessage) json.RawMessage {
 // additional_tools input items), and sampling/format fields. It sets req.tools
 // and req.jsonMode for the response translators.
 func prepareChatRequest(req *responsesRequest, model *config.ModelConfig) (map[string]any, error) {
+	if err := validateChatFileURLs(req.Input); err != nil {
+		return nil, err
+	}
 	allTools := append(append([]json.RawMessage(nil), req.Tools...), collectAdditionalTools(req.Input)...)
 	tt := translateTools(allTools)
 	req.tools = tt.Registry

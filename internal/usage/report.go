@@ -11,36 +11,34 @@ import (
 
 // RunUsageReport opens the usage database and prints a daily summary per user.
 func RunUsageReport(dbPath string, days int) {
-	db, err := sql.Open("sqlite", dbPath+"?mode=ro&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", usageDSN(dbPath, true))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error opening usage db: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
-	if days <= 0 {
-		days = 30
-	}
+	fromDay, untilDay := usagePeriod(days)
 
 	rows, err := db.Query(`
 		SELECT
-			date(timestamp)                AS day,
+			day,
 			key_name,
 			key_hash,
-			COUNT(*)                       AS requests,
-			SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS successful,
-			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS errors,
+			SUM(requests)                       AS requests,
+			SUM(successful) AS successful,
+			SUM(errors) AS errors,
 			SUM(input_tokens)              AS input_tokens,
 			SUM(output_tokens)             AS output_tokens,
 			SUM(total_tokens)              AS total_tokens,
 			SUM(request_bytes)             AS request_bytes,
 			SUM(response_bytes)            AS response_bytes,
-			CAST(AVG(duration_ms) AS INTEGER) AS avg_duration_ms
-		FROM usage
-		WHERE timestamp >= date('now', ?)
+			CAST(1.0 * SUM(duration_ms) / SUM(requests) AS INTEGER) AS avg_duration_ms
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY day, key_hash
 		ORDER BY day DESC, total_tokens DESC
-	`, fmt.Sprintf("-%d days", days))
+	`, fromDay, untilDay)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "query error: %v\n", err)
 		os.Exit(1)
@@ -82,7 +80,7 @@ func RunUsageReport(dbPath string, days int) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%d\n",
 			day,
 			displayName,
-			keyHash[:8],
+			keyHash[:min(8, len(keyHash))],
 			requests,
 			successful,
 			errors,
@@ -107,22 +105,23 @@ func RunUsageReport(dbPath string, days int) {
 
 // printUserSummary prints an aggregate summary across all days per user.
 func printUserSummary(db *sql.DB, days int) {
+	fromDay, untilDay := usagePeriod(days)
 	rows, err := db.Query(`
 		SELECT
 			key_name,
 			key_hash,
-			COUNT(*)                       AS requests,
+			SUM(requests)                       AS requests,
 			SUM(input_tokens)              AS input_tokens,
 			SUM(output_tokens)             AS output_tokens,
 			SUM(total_tokens)              AS total_tokens,
-			MIN(timestamp)                 AS first_seen,
-			MAX(timestamp)                 AS last_seen,
-			COUNT(DISTINCT date(timestamp)) AS active_days
-		FROM usage
-		WHERE timestamp >= date('now', ?)
+			MIN(day)                 AS first_seen,
+			MAX(last_seen)                 AS last_seen,
+			COUNT(DISTINCT day) AS active_days
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY key_hash
 		ORDER BY total_tokens DESC
-	`, fmt.Sprintf("-%d days", days))
+	`, fromDay, untilDay)
 	if err != nil {
 		return
 	}
@@ -159,7 +158,7 @@ func printUserSummary(db *sql.DB, days int) {
 
 		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			displayName,
-			keyHash[:8],
+			keyHash[:min(8, len(keyHash))],
 			requests,
 			formatNumber(inputTokens),
 			formatNumber(outputTokens),
@@ -174,31 +173,29 @@ func printUserSummary(db *sql.DB, days int) {
 
 // RunModelReport prints a per-model breakdown.
 func RunModelReport(dbPath string, days int) {
-	db, err := sql.Open("sqlite", dbPath+"?mode=ro&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", usageDSN(dbPath, true))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error opening usage db: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
-	if days <= 0 {
-		days = 30
-	}
+	fromDay, untilDay := usagePeriod(days)
 
 	rows, err := db.Query(`
 		SELECT
 			model,
-			COUNT(*)                       AS requests,
+			SUM(requests)                       AS requests,
 			COUNT(DISTINCT key_hash)       AS unique_users,
 			SUM(input_tokens)              AS input_tokens,
 			SUM(output_tokens)             AS output_tokens,
 			SUM(total_tokens)              AS total_tokens,
-			CAST(AVG(duration_ms) AS INTEGER) AS avg_duration_ms
-		FROM usage
-		WHERE timestamp >= date('now', ?)
+			CAST(1.0 * SUM(duration_ms) / SUM(requests) AS INTEGER) AS avg_duration_ms
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY model
 		ORDER BY total_tokens DESC
-	`, fmt.Sprintf("-%d days", days))
+	`, fromDay, untilDay)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "query error: %v\n", err)
 		os.Exit(1)

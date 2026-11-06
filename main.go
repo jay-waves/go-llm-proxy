@@ -16,8 +16,6 @@ import (
 	"go-llm-proxy/internal/handler"
 	"go-llm-proxy/internal/httputil"
 	"go-llm-proxy/internal/lb"
-	"go-llm-proxy/internal/mailer"
-	"go-llm-proxy/internal/mcp"
 	"go-llm-proxy/internal/pipeline"
 	"go-llm-proxy/internal/ratelimit"
 	"go-llm-proxy/internal/usage"
@@ -34,8 +32,8 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	addUser := flag.Bool("adduser", false, "interactively add a new API key to the config")
 	serveConfigPage := flag.Bool("serve-config-generator", false, "serve the config generator UI at GET /")
-	serveDashboard := flag.Bool("serve-dashboard", false, "serve the usage dashboard at /usage")
-	logMetrics := flag.Bool("log-metrics", false, "enable per-request usage logging to SQLite")
+	serveDashboard := flag.Bool("serve-dashboard", false, "enable usage logging for the unified admin overview")
+	logMetrics := flag.Bool("log-metrics", false, "enable daily-aggregated usage statistics in SQLite")
 	usageReport := flag.Bool("usage-report", false, "print usage summary report and exit")
 	modelReport := flag.Bool("model-report", false, "print per-model usage report and exit")
 	reportDays := flag.Int("report-days", 30, "number of days to include in reports")
@@ -95,7 +93,7 @@ func main() {
 
 	// Initialize usage logger if enabled via CLI flag or config.
 	var ul *usage.UsageLogger
-	if *logMetrics || cfg.LogMetrics {
+	if *logMetrics || cfg.LogMetrics || *serveDashboard {
 		dbPath := *usageDBPath
 		if dbPath == "" && cfg.UsageDB != "" {
 			dbPath = cfg.UsageDB
@@ -139,7 +137,6 @@ func main() {
 	models := handler.NewModelsHandler(cs, healthStore)
 	rl := ratelimit.NewRateLimiter(cfg.TrustedProxies)
 
-	dashEnabled := (*serveDashboard || cfg.UsageDashboard) && ul != nil
 	// Admin routes always mount; the handler answers 404 until an admin
 	// password exists (admin_password, or the dashboard password when the
 	// dashboard is enabled), so enabling it is a config reload, not a restart.
@@ -179,6 +176,7 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /assets/", handler.WebAssets())
 	mux.Handle("GET /healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -188,23 +186,12 @@ func main() {
 		mux.Handle("GET /{$}", configPage)
 		slog.Info("config generator page enabled at GET /")
 	}
-	if dashEnabled {
-		dash := handler.NewUsageDashboardHandler(cs, ul, dashRl)
-		mux.Handle("GET /usage", http.HandlerFunc(dash.LoginPage))
-		mux.Handle("POST /usage", http.HandlerFunc(dash.HandleLogin))
-		mux.Handle("POST /usage/logout", http.HandlerFunc(dash.HandleLogout))
-		mux.Handle("GET /usage/data", http.HandlerFunc(dash.ServeData))
-		slog.Info("usage dashboard enabled at /usage")
-	}
-	// Self-service enrollment (public join pages). Always mounted; a join
-	// link answers "not active" until enrollment is configured.
-	mailSender := &mailer.SMTP{}
-	handler.NewEnrollHandler(cs, rl, mailSender).Mount(mux)
 	{
 		admin := handler.NewAdminHandler(cs, dashRl, healthStore, ul)
-		admin.Mailer = mailSender
+		admin.SetupEnabled = *serveConfigPage
+		admin.MountUsage(mux)
 		mux.Handle("GET /admin", http.HandlerFunc(admin.Root))
-		mux.Handle("GET /admin/", http.HandlerFunc(admin.Root))
+		mux.Handle("GET /admin/{$}", http.HandlerFunc(admin.Root))
 		mux.Handle("GET /admin/login", http.HandlerFunc(admin.LoginPage))
 		mux.Handle("POST /admin/login", http.HandlerFunc(admin.HandleLogin))
 		mux.Handle("POST /admin/logout", http.HandlerFunc(admin.HandleLogout))
@@ -220,13 +207,7 @@ func main() {
 		mux.Handle("GET /admin/audio", admin.RequirePage(admin.AudioPage))
 		mux.Handle("GET /admin/audio/data", admin.RequireAPI(admin.AudioData))
 		mux.Handle("POST /admin/audio/mutate", admin.RequireAPI(admin.AudioMutate))
-		mux.Handle("GET /admin/documents", admin.RequirePage(admin.DocumentsPage))
-		mux.Handle("GET /admin/documents/data", admin.RequireAPI(admin.DocumentsData))
-		mux.Handle("POST /admin/documents/mutate", admin.RequireAPI(admin.DocumentsMutate))
 		mux.Handle("POST /admin/workloads/probe", admin.RequireAPI(admin.WorkloadProbe))
-		mux.Handle("GET /admin/enrollment", admin.RequirePage(admin.EnrollmentPage))
-		mux.Handle("GET /admin/enrollment/data", admin.RequireAPI(admin.EnrollmentData))
-		mux.Handle("POST /admin/enrollment/mutate", admin.RequireAPI(admin.EnrollmentMutate))
 		// Legacy processors API remains as a compatibility surface for the
 		// Chat helpers card; it is no longer an administrator-facing tab.
 		mux.Handle("GET /admin/processors", admin.RequirePage(admin.ProcessorsPage))
@@ -248,40 +229,20 @@ func main() {
 	mux.Handle("POST /v1/messages", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, messages)))
 	mux.Handle("POST /anthropic/v1/messages", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, messages)))
 	audio := handler.NewAudioHandler(cs, proxy)
-	documents := handler.NewDocumentHandler(cs)
 	mux.Handle("POST /v1/audio/transcriptions", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, audio)))
 	mux.Handle("POST /v1/audio/translations", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, audio)))
 	mux.Handle("POST /v1/audio/speech", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, audio)))
 	mux.Handle("GET /v1/audio/voices", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, audio)))
-	for _, route := range []string{"/layout-parsing", "/restructure-pages", "/v1/layout-parsing", "/v1/restructure-pages"} {
-		mux.Handle("POST "+route, ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, documents)))
-	}
-	mux.Handle("POST /v1/search", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, handler.NewSearchHandler(pl))))
-	mux.Handle("GET /v1/capabilities", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, handler.NewCapabilitiesHandler(cs, pl))))
+	mux.Handle("GET /v1/capabilities", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, handler.NewCapabilitiesHandler(cs))))
 	mux.Handle("/v1/", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, proxy)))
 	mux.Handle("/anthropic/", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, proxy)))
-
-	// MCP endpoint for web search (OpenCode, Qwen Code, any MCP client).
-	mcpHandler := mcp.NewHandler(cs, pl)
-	mux.Handle("GET /mcp/sse", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, http.HandlerFunc(mcpHandler.ServeSSE))))
-	mux.Handle("POST /mcp/messages", ratelimit.RateLimitMiddleware(rl, auth.AuthMiddleware(cs, http.HandlerFunc(mcpHandler.ServeMessages))))
-	if cfg.Processors.WebSearchKey != "" {
-		slog.Info("MCP endpoint enabled at /mcp/sse (web_search tool available)")
-	}
-
-	// Qdrant vector database proxy with app isolation.
-	if cfg.Services.Qdrant != nil {
-		qdrant := handler.NewQdrantHandler(cs, ul)
-		mux.Handle("/qdrant/", ratelimit.RateLimitMiddleware(rl, auth.AppKeyAuthMiddleware(cs, qdrant)))
-		slog.Info("qdrant proxy enabled at /qdrant/", "backend", cfg.Services.Qdrant.Backend, "app_keys", len(cfg.Services.Qdrant.AppKeys))
-	}
 
 	// Start health checker background goroutine.
 	healthStore.Start(context.Background())
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httputil.RecoveryMiddleware(mux),
+		Handler:           httputil.CORSMiddleware(func() []string { return cs.Get().CORSAllowedOrigins }, httputil.RecoveryMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,

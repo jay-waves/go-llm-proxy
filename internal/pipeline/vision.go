@@ -43,37 +43,22 @@ const maxConcurrentVision = 5
 // prevent re-running the full cascade on every turn for the same image.
 const imageFailureTTL = 5 * time.Minute
 
-// Vision prompts — the describe prompt is for general images; the OCR prompt is
-// for PDF page images where text extraction is more useful than visual description.
-// The short OCR prompt is for dedicated OCR models (e.g., PaddleOCR-VL) that
-// respond to task-specific prefixes.
+// Image prompts for ordinary images and text-heavy tool screenshots.
 const (
 	visionPromptDescribe = "Describe this image accurately and objectively. Include all visible subjects, objects, text, and relevant details. Be specific about what you observe."
-	visionPromptOCR      = "Extract all text from this page. Reproduce the text content verbatim, preserving structure (headings, paragraphs, lists, tables). Focus on text content, not visual layout."
-	ocrModelPrompt       = "OCR:"
+	visionPromptText     = "Extract all text from this page. Reproduce the text content verbatim, preserving structure (headings, paragraphs, lists, tables). Focus on text content, not visual layout."
 )
 
 // processImages detects image content in the translated Chat Completions request,
 // sends each image to the vision model for description, and replaces the image_url
 // parts with text descriptions. Images are processed concurrently for speed, and
-// PDF page images (detected via tool result heuristics) use the OCR model with a
-// text-extraction prompt. ocrModel may be nil, in which case visionModel is used.
 func (p *Pipeline) processImages(ctx context.Context, chatReq map[string]any,
-	visionModels []*config.ModelConfig, ocrModel *config.ModelConfig) (map[string]any, error) {
+	visionModels []*config.ModelConfig) (map[string]any, error) {
 
 	var visionModel *config.ModelConfig
 	if len(visionModels) > 0 {
 		visionModel = visionModels[0]
 	}
-	// cascadeFor expands the primary vision model into the full cascade;
-	// any other model (OCR) runs alone.
-	cascadeFor := func(m *config.ModelConfig) []*config.ModelConfig {
-		if m != nil && visionModel != nil && m.Name == visionModel.Name {
-			return visionModels
-		}
-		return []*config.ModelConfig{m}
-	}
-
 	// Normalize messages to []any — translation layers may produce []map[string]any.
 	var messages []any
 	switch m := chatReq["messages"].(type) {
@@ -95,8 +80,8 @@ func (p *Pipeline) processImages(ctx context.Context, chatReq map[string]any,
 	// OCR (text extraction) job. Cache keys use suffixes ":v" and ":o" to
 	// store results independently.
 	//
-	// For tool-role images (PDF pages, view_image output): OCR only.
-	// For user-role images: vision always + OCR if an OCR model is configured.
+	// For tool-role images (screenshots, view_image output): text-oriented description.
+	// For user-role images: ordinary visual description.
 	type imageJob struct {
 		url       string
 		cacheKey  string // hash + ":v" or ":o"
@@ -104,12 +89,6 @@ func (p *Pipeline) processImages(ctx context.Context, chatReq map[string]any,
 		prompt    string
 		maxTokens int
 		model     *config.ModelConfig
-		// Fallback stage: used by the tool-role OCR→vision cascade. When the
-		// primary model fails or returns empty, retry with fallbackModel
-		// using fallbackPrompt. Zero-valued when no cascade is needed (user-role
-		// images, or deployments with only one processor configured).
-		fallbackModel  *config.ModelConfig
-		fallbackPrompt string
 	}
 	var jobs []imageJob
 	seenKeys := map[string]bool{}
@@ -157,7 +136,7 @@ func (p *Pipeline) processImages(ctx context.Context, chatReq map[string]any,
 			hash := hashImageURL(url)
 
 			if isToolRole {
-				// Tool-role images (PDF pages, screenshots): OCR → vision cascade.
+				// Tool screenshots use the same vision cascade with a text-oriented prompt.
 				ocrKey := hash + ":o"
 				failKey := hash + ":fail"
 				if _, ok := imageCache.Load(ocrKey); ok {
@@ -172,27 +151,9 @@ func (p *Pipeline) processImages(ctx context.Context, chatReq map[string]any,
 				}
 				seenKeys[ocrKey] = true
 
-				// Primary: dedicated OCR model if configured; else vision w/
-				// OCR-style prompt (matches pre-cascade behavior).
-				primary := visionModel
-				primaryPrompt := visionPromptOCR
-				if ocrModel != nil {
-					primary = ocrModel
-					primaryPrompt = ocrModelPrompt
-				}
-				// Fallback: vision model, but only if it's a different instance
-				// than the primary. Avoids double-calling the same backend when
-				// the operator configured only one processor.
-				var fallbackMdl *config.ModelConfig
-				fallbackPrompt := ""
-				if visionModel != nil && primary != nil && visionModel.Name != primary.Name {
-					fallbackMdl = visionModel
-					fallbackPrompt = visionPromptOCR
-				}
 				jobs = append(jobs, imageJob{
 					url: url, cacheKey: ocrKey, failKey: failKey,
-					prompt: primaryPrompt, maxTokens: 2000, model: primary,
-					fallbackModel: fallbackMdl, fallbackPrompt: fallbackPrompt,
+					prompt: visionPromptText, maxTokens: 2000, model: visionModel,
 				})
 			} else {
 				// User-role images: vision description only.
@@ -228,21 +189,10 @@ func (p *Pipeline) processImages(ctx context.Context, chatReq map[string]any,
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				desc, err := p.describeImageAny(ctx, cascadeFor(j.model), j.url, j.prompt, j.maxTokens)
+				desc, err := p.describeImageAny(ctx, visionModels, j.url, j.prompt, j.maxTokens)
 				// Cascade: if the primary attempt failed or came back empty,
 				// and a fallback is configured, retry with the fallback.
-				if (err != nil || strings.TrimSpace(desc) == "") && j.fallbackModel != nil {
-					slog.Warn("image pipeline stage failed, trying fallback",
-						"stage", "primary",
-						"primary_model", j.model.Name,
-						"fallback_model", j.fallbackModel.Name,
-						"error", err)
-					desc, err = p.describeImageAny(ctx, cascadeFor(j.fallbackModel), j.url, j.fallbackPrompt, j.maxTokens)
-					if err == nil && strings.TrimSpace(desc) != "" {
-						slog.Info("image pipeline fallback succeeded",
-							"fallback_model", j.fallbackModel.Name)
-					}
-				}
+
 				results[idx] = jobResult{desc: desc, err: err}
 			}(i, job)
 		}

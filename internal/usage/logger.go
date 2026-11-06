@@ -4,34 +4,19 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
-	"database/sql"
+
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+
 	"strings"
-	"sync"
+
 	"time"
 
 	"go-llm-proxy/internal/config"
 
 	_ "modernc.org/sqlite"
 )
-
-// UsageLogger records per-request metrics to a SQLite database.
-// All methods are safe for concurrent use.
-type UsageLogger struct {
-	db        *sql.DB
-	readDB    *sql.DB
-	records   chan UsageRecord
-	queueMu   sync.RWMutex
-	closed    bool
-	worker    sync.WaitGroup
-	closeOnce sync.Once
-	closeErr  error
-}
-
-const usageQueueSize = 1024
 
 // UsageRecord holds the metrics for a single proxied request.
 type UsageRecord struct {
@@ -49,143 +34,6 @@ type UsageRecord struct {
 	OutputTokens  int
 	TotalTokens   int
 	DurationMS    int64
-}
-
-const schema = `
-CREATE TABLE IF NOT EXISTS usage (
-	id            INTEGER PRIMARY KEY AUTOINCREMENT,
-	timestamp     TEXT    NOT NULL,
-	key_hash      TEXT    NOT NULL,
-	key_name      TEXT    NOT NULL DEFAULT '',
-	model         TEXT    NOT NULL,
-	alias_from    TEXT    NOT NULL DEFAULT '',
-	backend       TEXT    NOT NULL DEFAULT '',
-	endpoint      TEXT    NOT NULL DEFAULT '',
-	status_code   INTEGER NOT NULL DEFAULT 0,
-	request_bytes INTEGER NOT NULL DEFAULT 0,
-	response_bytes INTEGER NOT NULL DEFAULT 0,
-	input_tokens  INTEGER NOT NULL DEFAULT 0,
-	output_tokens INTEGER NOT NULL DEFAULT 0,
-	total_tokens  INTEGER NOT NULL DEFAULT 0,
-	duration_ms   INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage(timestamp);
-CREATE INDEX IF NOT EXISTS idx_usage_key_hash  ON usage(key_hash);
-CREATE INDEX IF NOT EXISTS idx_usage_model     ON usage(model);
-CREATE INDEX IF NOT EXISTS idx_usage_ts_key    ON usage(timestamp, key_hash, total_tokens);
-`
-
-// NewUsageLogger opens (or creates) the SQLite database at the given path.
-func NewUsageLogger(dbPath string) (*UsageLogger, error) {
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		return nil, fmt.Errorf("opening usage db: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("creating usage schema: %w", err)
-	}
-
-	// Migration for databases created before the backend column existed.
-	// SQLite has no ADD COLUMN IF NOT EXISTS; a duplicate-column error means
-	// the migration already ran.
-	if _, err := db.Exec(`ALTER TABLE usage ADD COLUMN backend TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
-		return nil, fmt.Errorf("migrating usage schema: %w", err)
-	}
-	if _, err := db.Exec(`ALTER TABLE usage ADD COLUMN alias_from TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
-		return nil, fmt.Errorf("migrating usage alias column: %w", err)
-	}
-
-	readDB, err := sql.Open("sqlite", dbPath+"?mode=ro&_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("opening usage read db: %w", err)
-	}
-	readDB.SetMaxOpenConns(1)
-
-	ul := &UsageLogger{
-		db:      db,
-		readDB:  readDB,
-		records: make(chan UsageRecord, usageQueueSize),
-	}
-	ul.worker.Add(1)
-	go ul.runWriter()
-	return ul, nil
-}
-
-// Log queues a usage entry for the logger's single writer goroutine. The
-// buffered queue keeps the request path non-blocking under normal load and
-// applies backpressure instead of spawning an unbounded number of goroutines
-// if SQLite falls behind. Calls racing with Close are either accepted and
-// drained or safely ignored after the queue has closed.
-func (ul *UsageLogger) Log(rec UsageRecord) {
-	ul.queueMu.RLock()
-	defer ul.queueMu.RUnlock()
-	if ul.closed {
-		return
-	}
-	ul.records <- rec
-}
-
-func (ul *UsageLogger) runWriter() {
-	defer ul.worker.Done()
-	for rec := range ul.records {
-		ul.write(rec)
-	}
-}
-
-func (ul *UsageLogger) write(rec UsageRecord) {
-	_, err := ul.db.Exec(`
-		INSERT INTO usage (timestamp, key_hash, key_name, model, alias_from, backend, endpoint,
-			status_code, request_bytes, response_bytes,
-			input_tokens, output_tokens, total_tokens, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.Timestamp.UTC().Format(time.RFC3339),
-		rec.KeyHash,
-		rec.KeyName,
-		rec.Model,
-		rec.AliasFrom,
-		rec.Backend,
-		rec.Endpoint,
-		rec.StatusCode,
-		rec.RequestBytes,
-		rec.ResponseBytes,
-		rec.InputTokens,
-		rec.OutputTokens,
-		rec.TotalTokens,
-		rec.DurationMS,
-	)
-	if err != nil {
-		slog.Error("failed to log usage", "error", err)
-	}
-}
-
-// Close stops accepting records, drains every record already queued, and then
-// closes the underlying databases. It is safe to call more than once.
-func (ul *UsageLogger) Close() error {
-	ul.closeOnce.Do(func() {
-		ul.queueMu.Lock()
-		ul.closed = true
-		close(ul.records)
-		ul.queueMu.Unlock()
-
-		ul.worker.Wait()
-		err1 := ul.readDB.Close()
-		err2 := ul.db.Close()
-		if err2 != nil {
-			ul.closeErr = err2
-		} else {
-			ul.closeErr = err1
-		}
-	})
-	return ul.closeErr
 }
 
 type DashboardData struct {
@@ -249,46 +97,51 @@ type BackendRow struct {
 }
 
 func (ul *UsageLogger) QueryDashboardData(days int) (*DashboardData, error) {
-	if days <= 0 {
-		days = 30
+	if err := ul.Flush(); err != nil {
+		return nil, err
 	}
-	periodArg := fmt.Sprintf("-%d days", days)
+	fromDay, untilDay := usagePeriod(days)
 
-	var data DashboardData
+	data := DashboardData{Daily: []DailyRow{}, DailyModels: []DailyModelRow{}, Users: []UserRow{}, Models: []ModelRow{}, Backends: []BackendRow{}}
 
 	err := ul.readDB.QueryRow(`
 		SELECT
-			COUNT(*),
-			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(requests), 0),
+			COALESCE(SUM(total_tokens), 0) AS total_tokens,
 			COUNT(DISTINCT key_hash),
-			CAST(COALESCE(100.0 * SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0) AS REAL)
-		FROM usage
-		WHERE timestamp >= date('now', ?)
-	`, periodArg).Scan(&data.Totals.Requests, &data.Totals.TotalTokens, &data.Totals.Users, &data.Totals.ErrorRate)
+			CAST(COALESCE(100.0 * SUM(errors) / NULLIF(COALESCE(SUM(requests), 0), 0), 0) AS REAL)
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
+	`, fromDay, untilDay).Scan(&data.Totals.Requests, &data.Totals.TotalTokens, &data.Totals.Users, &data.Totals.ErrorRate)
 	if err != nil {
 		return nil, fmt.Errorf("totals query: %w", err)
 	}
 
 	rows, err := ul.readDB.Query(`
 		SELECT
-			date(timestamp) AS day,
-			COUNT(*)        AS requests,
-			COALESCE(SUM(total_tokens), 0),
-			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS errors
-		FROM usage
-		WHERE timestamp >= date('now', ?)
+			day,
+			COALESCE(SUM(requests), 0)        AS requests,
+			COALESCE(SUM(total_tokens), 0) AS total_tokens,
+			SUM(errors) AS errors
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY day
 		ORDER BY day
-	`, periodArg)
+	`, fromDay, untilDay)
 	if err != nil {
 		return nil, fmt.Errorf("daily query: %w", err)
 	}
 	for rows.Next() {
 		var r DailyRow
 		if err := rows.Scan(&r.Date, &r.Requests, &r.TotalTokens, &r.Errors); err != nil {
-			continue
+			rows.Close()
+			return nil, err
 		}
 		data.Daily = append(data.Daily, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	rows.Close()
 
@@ -296,15 +149,15 @@ func (ul *UsageLogger) QueryDashboardData(days int) (*DashboardData, error) {
 		SELECT
 			key_name,
 			key_hash,
-			COUNT(*)        AS requests,
-			COALESCE(SUM(total_tokens), 0),
-			COUNT(DISTINCT date(timestamp)) AS active_days,
-			MAX(timestamp)  AS last_seen
-		FROM usage INDEXED BY idx_usage_ts_key
-		WHERE timestamp >= date('now', ?)
+			COALESCE(SUM(requests), 0)        AS requests,
+			COALESCE(SUM(total_tokens), 0) AS total_tokens,
+			COUNT(DISTINCT day) AS active_days,
+			MAX(last_seen)  AS last_seen
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY key_hash
 		ORDER BY total_tokens DESC
-	`, periodArg)
+	`, fromDay, untilDay)
 	if err != nil {
 		return nil, fmt.Errorf("users query: %w", err)
 	}
@@ -312,7 +165,8 @@ func (ul *UsageLogger) QueryDashboardData(days int) (*DashboardData, error) {
 		var r UserRow
 		var lastSeen string
 		if err := userRows.Scan(&r.Name, &r.KeyHash, &r.Requests, &r.TotalTokens, &r.ActiveDays, &lastSeen); err != nil {
-			continue
+			userRows.Close()
+			return nil, err
 		}
 		if r.Name == "" {
 			r.Name = "(unnamed)"
@@ -327,30 +181,39 @@ func (ul *UsageLogger) QueryDashboardData(days int) (*DashboardData, error) {
 		}
 		data.Users = append(data.Users, r)
 	}
+	if err := userRows.Err(); err != nil {
+		userRows.Close()
+		return nil, err
+	}
 	userRows.Close()
 
 	modelRows, err := ul.readDB.Query(`
 		SELECT
 			model,
-			COUNT(*)        AS requests,
+			COALESCE(SUM(requests), 0)        AS requests,
 			COUNT(DISTINCT key_hash) AS unique_users,
-			COALESCE(SUM(total_tokens), 0),
-			CAST(AVG(duration_ms) AS REAL) AS avg_duration_ms,
-			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS errors
-		FROM usage
-		WHERE timestamp >= date('now', ?)
+			COALESCE(SUM(total_tokens), 0) AS total_tokens,
+			CAST(1.0 * SUM(duration_ms) / SUM(requests) AS REAL) AS avg_duration_ms,
+			SUM(errors) AS errors
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY model
 		ORDER BY total_tokens DESC
-	`, periodArg)
+	`, fromDay, untilDay)
 	if err != nil {
 		return nil, fmt.Errorf("models query: %w", err)
 	}
 	for modelRows.Next() {
 		var r ModelRow
 		if err := modelRows.Scan(&r.Model, &r.Requests, &r.Users, &r.TotalTokens, &r.AvgLatency, &r.Errors); err != nil {
-			continue
+			modelRows.Close()
+			return nil, err
 		}
 		data.Models = append(data.Models, r)
+	}
+	if err := modelRows.Err(); err != nil {
+		modelRows.Close()
+		return nil, err
 	}
 	modelRows.Close()
 
@@ -358,47 +221,57 @@ func (ul *UsageLogger) QueryDashboardData(days int) (*DashboardData, error) {
 		SELECT
 			model,
 			backend,
-			COUNT(*)        AS requests,
-			COALESCE(SUM(total_tokens), 0),
-			CAST(AVG(duration_ms) AS REAL) AS avg_duration_ms,
-			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS errors
-		FROM usage
-		WHERE timestamp >= date('now', ?) AND backend != ''
+			COALESCE(SUM(requests), 0)        AS requests,
+			COALESCE(SUM(total_tokens), 0) AS total_tokens,
+			CAST(1.0 * SUM(duration_ms) / SUM(requests) AS REAL) AS avg_duration_ms,
+			SUM(errors) AS errors
+		FROM usage_daily
+		WHERE day >= ? AND day < ? AND backend != ''
 		GROUP BY model, backend
 		ORDER BY model, total_tokens DESC
-	`, periodArg)
+	`, fromDay, untilDay)
 	if err != nil {
 		return nil, fmt.Errorf("backends query: %w", err)
 	}
 	for backendRows.Next() {
 		var r BackendRow
 		if err := backendRows.Scan(&r.Model, &r.Backend, &r.Requests, &r.TotalTokens, &r.AvgLatency, &r.Errors); err != nil {
-			continue
+			backendRows.Close()
+			return nil, err
 		}
 		data.Backends = append(data.Backends, r)
+	}
+	if err := backendRows.Err(); err != nil {
+		backendRows.Close()
+		return nil, err
 	}
 	backendRows.Close()
 
 	dailyModelRows, err := ul.readDB.Query(`
 		SELECT
-			date(timestamp) AS day,
+			day,
 			model,
-			COUNT(*)        AS requests,
+			COALESCE(SUM(requests), 0)        AS requests,
 			COALESCE(SUM(total_tokens), 0)
-		FROM usage
-		WHERE timestamp >= date('now', ?)
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY day, model
 		ORDER BY day, model
-	`, periodArg)
+	`, fromDay, untilDay)
 	if err != nil {
 		return nil, fmt.Errorf("daily models query: %w", err)
 	}
 	for dailyModelRows.Next() {
 		var r DailyModelRow
 		if err := dailyModelRows.Scan(&r.Date, &r.Model, &r.Requests, &r.TotalTokens); err != nil {
-			continue
+			dailyModelRows.Close()
+			return nil, err
 		}
 		data.DailyModels = append(data.DailyModels, r)
+	}
+	if err := dailyModelRows.Err(); err != nil {
+		dailyModelRows.Close()
+		return nil, err
 	}
 	dailyModelRows.Close()
 
@@ -416,15 +289,16 @@ type KeyActivity struct {
 // key hash. The admin Users page joins this against the configured keys so
 // stale keys are distinguishable from active ones.
 func (ul *UsageLogger) QueryKeyActivity(days int) (map[string]KeyActivity, error) {
-	if days <= 0 {
-		days = 30
+	if err := ul.Flush(); err != nil {
+		return nil, err
 	}
+	fromDay, untilDay := usagePeriod(days)
 	rows, err := ul.readDB.Query(`
-		SELECT key_hash, COUNT(*), COALESCE(SUM(total_tokens), 0), MAX(timestamp)
-		FROM usage INDEXED BY idx_usage_ts_key
-		WHERE timestamp >= date('now', ?)
+		SELECT key_hash, COALESCE(SUM(requests), 0), COALESCE(SUM(total_tokens), 0), MAX(last_seen)
+		FROM usage_daily
+		WHERE day >= ? AND day < ?
 		GROUP BY key_hash
-	`, fmt.Sprintf("-%d days", days))
+	`, fromDay, untilDay)
 	if err != nil {
 		return nil, fmt.Errorf("key activity query: %w", err)
 	}
@@ -434,7 +308,8 @@ func (ul *UsageLogger) QueryKeyActivity(days int) (map[string]KeyActivity, error
 		var hash, lastSeen string
 		var a KeyActivity
 		if err := rows.Scan(&hash, &a.Requests, &a.TotalTokens, &lastSeen); err != nil {
-			continue
+			rows.Close()
+			return nil, err
 		}
 		if len(lastSeen) >= 10 {
 			a.LastSeen = lastSeen[:10]
@@ -442,6 +317,9 @@ func (ul *UsageLogger) QueryKeyActivity(days int) (map[string]KeyActivity, error
 			a.LastSeen = lastSeen
 		}
 		out[hash] = a
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

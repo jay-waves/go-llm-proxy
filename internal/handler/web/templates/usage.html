@@ -1,0 +1,40 @@
+<div class="toolbar"><h1>Overview</h1><span id="usageStatus" role="status" aria-live="polite"></span></div>
+<div class="summary-cards" id="summaryCards"></div>
+<div class="card">
+<div class="card-header">
+<h2 id="chartTitle">Daily Tokens</h2>
+<div style="display:flex;gap:8px;align-items:center">
+<div class="toggle-group">
+<button class="toggle-btn" id="toggleRequests" onclick="setChartMode('requests')">Requests</button>
+<button class="toggle-btn active" id="toggleTokens" onclick="setChartMode('tokens')">Tokens</button>
+</div>
+<select id="periodSelect" onchange="loadData()">
+<option value="7">Last 7 days</option>
+<option value="30" selected>Last 30 days</option>
+<option value="90">Last 90 days</option>
+</select>
+</div>
+</div>
+<div id="dailyChart"></div>
+</div>
+<div class="card">
+<div class="card-header"><h2>Users</h2><input id="userTableFilter" class="filter-input" type="search" placeholder="Filter users&hellip;" autocomplete="off"></div>
+<div class="table-wrap"><table class="data-table">
+<thead><tr><th>Name</th><th>Key</th><th>Requests</th><th>Tokens</th><th>Active Days</th><th>Last Seen</th></tr></thead>
+<tbody id="usersBody"></tbody>
+</table></div>
+</div>
+<div class="card">
+<h2>Models</h2>
+<div class="table-wrap"><table class="data-table">
+<thead><tr><th>Model</th><th>Requests</th><th>Users</th><th>Tokens</th><th>Avg Latency</th><th>Errors</th></tr></thead>
+<tbody id="modelsBody"></tbody>
+</table></div>
+</div>
+<div class="card" id="backendsCard" style="display:none">
+<div class="card-header"><h2>Backends</h2><input id="backendTableFilter" class="filter-input" type="search" placeholder="Filter backends&hellip;" autocomplete="off"></div>
+<div class="table-wrap"><table class="data-table">
+<thead><tr><th>Model</th><th>Backend</th><th>Requests</th><th>Share</th><th>Tokens</th><th>Avg Latency</th><th>Errors</th></tr></thead>
+<tbody id="backendsBody"></tbody>
+</table></div>
+</div>

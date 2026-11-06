@@ -368,17 +368,7 @@ func blockKeys(block map[string]json.RawMessage) []string {
 	return keys
 }
 
-// translateDocumentParts converts an Anthropic document content block into
-// Chat Completions content parts.
-//
-//   - base64 PDF: a pipeline-internal pdf_data part (processPDFs extracts text
-//     or falls back to OCR/vision, and no part of it reaches the backend).
-//   - text source: the text itself, headed by the title/context when present.
-//   - content source: the inner text/image blocks, inlined.
-//   - url source: a pipeline-internal document_url part; the pipeline fetches
-//     it through the SSRF-safe client (size capped) and processes the result.
-//
-// citations and cache_control are ignored.
+// translateDocumentParts maps inline files and text into Chat Completions parts.
 func translateDocumentParts(block map[string]json.RawMessage) []any {
 	var source struct {
 		Type      string          `json:"type"`
@@ -409,11 +399,11 @@ func translateDocumentParts(block map[string]json.RawMessage) []any {
 	case "base64":
 		if source.MediaType == "application/pdf" || source.MediaType == "" {
 			result := map[string]any{
-				"type": "pdf_data",
-				"data": source.Data,
+				"type": "file",
+				"file": map[string]any{"file_data": "data:application/pdf;base64," + source.Data},
 			}
 			if title != "" {
-				result["filename"] = title
+				result["file"].(map[string]any)["filename"] = title
 			}
 			return []any{result}
 		}
@@ -452,14 +442,6 @@ func translateDocumentParts(block map[string]json.RawMessage) []any {
 			return parts
 		}
 
-	case "url":
-		if source.URL != "" {
-			result := map[string]any{"type": "document_url", "url": source.URL}
-			if title != "" {
-				result["filename"] = title
-			}
-			return []any{result}
-		}
 	}
 
 	slog.Warn("document block: unsupported format",
@@ -504,7 +486,7 @@ func extractToolResultContent(raw json.RawMessage) string {
 }
 
 // splitToolResultContent separates a tool_result content field into its text
-// and any media parts (image_url / pdf_data / ...) that a role:tool message
+// and any media parts (image_url / file / ...) that a role:tool message
 // cannot carry.
 func splitToolResultContent(raw json.RawMessage) (string, []any) {
 	if len(raw) == 0 || string(raw) == "null" {
@@ -685,6 +667,11 @@ func translateAnthropicToolChoice(tc json.RawMessage, hasTools bool) json.RawMes
 // buildChatRequestFromAnthropic translates a complete Anthropic Messages API
 // request into a Chat Completions request.
 func buildChatRequestFromAnthropic(req messagesRequest, backendModel string) (map[string]any, error) {
+	for _, message := range req.Messages {
+		if err := validateChatFileURLs(message); err != nil {
+			return nil, err
+		}
+	}
 	var chatMessages []map[string]any
 
 	// System prompt -> system message.

@@ -24,40 +24,6 @@ func (w *countingFlushRecorder) Flush() {
 	w.ResponseRecorder.Flush()
 }
 
-func TestDocumentHandlerPreservesPaddleContract(t *testing.T) {
-	var gotAuth, gotPath string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		gotPath = r.URL.Path
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), `"file":"abc"`) {
-			t.Errorf("request body changed: %s", body)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"result":{"layoutParsingResults":[{"markdown":{"text":"table"}}]},"errorCode":0}`)
-	}))
-	defer upstream.Close()
-
-	cs := config.NewTestConfigStore(&config.Config{Documents: config.DocumentsConfig{PaddleOCR: &config.PaddleOCRConfig{
-		Endpoint: "/layout-parsing", Timeout: 10,
-		Backends: []config.BackendConfig{{URL: upstream.URL, APIKey: "processor-secret"}},
-	}}})
-	h := NewDocumentHandler(cs)
-	r := httptest.NewRequest(http.MethodPost, "/layout-parsing", strings.NewReader(`{"file":"abc"}`))
-	r.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-	if gotPath != "/layout-parsing" || gotAuth != "Bearer processor-secret" {
-		t.Fatalf("path/auth mismatch: %q %q", gotPath, gotAuth)
-	}
-	if !strings.Contains(w.Body.String(), "layoutParsingResults") {
-		t.Fatalf("Paddle response shape changed: %s", w.Body.String())
-	}
-}
-
 func TestAudioHandlerRoutesAndRewritesTTSModel(t *testing.T) {
 	var gotModel, gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

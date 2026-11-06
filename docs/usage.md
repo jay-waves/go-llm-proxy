@@ -1,8 +1,8 @@
 # Usage Logging and Dashboard
 
-go-llm-proxy can log per-request metrics to a local SQLite database and serve an interactive dashboard for monitoring usage across users, models, and time periods.
+go-llm-proxy can store daily aggregated metrics in a local SQLite database and serve an interactive dashboard for monitoring usage across users, models, and time periods.
 
-![Usage dashboard overview](img/usage-dashboard.svg)
+Usage is part of the [unified web console](web-ui.md), alongside models and API keys.
 
 ## Enabling usage logging
 
@@ -28,43 +28,45 @@ The database location is resolved in this order:
 2. `usage_db` config field
 3. `usage.db` in the working directory (default)
 
-## What data is collected
+## Daily aggregation
 
-Every proxied request logs a single row with:
+Statistics are stored in `usage_daily`, with one row per **UTC date, API key
+hash, model and backend**. Requests in the same bucket increment counters;
+individual successful/error request records are not retained in the database.
 
-| Field | Description |
-|---|---|
-| `timestamp` | Request start time (UTC, RFC 3339) |
-| `key_hash` | First 16 hex chars of SHA-256 of the API key (identifies the user without storing the key) |
-| `key_name` | Friendly name from config (e.g., "admin", "guest") |
-| `model` | Model name from the request |
-| `backend` | Upstream backend URL that served the request |
-| `endpoint` | Request path (e.g., `/v1/chat/completions`, `/v1/responses`, `/v1/messages`) |
-| `status_code` | HTTP status returned to the client |
-| `request_bytes` | Size of the request body forwarded upstream |
-| `response_bytes` | Total bytes received from upstream |
-| `input_tokens` | Prompt/input tokens (extracted from upstream response) |
-| `output_tokens` | Completion/output tokens |
-| `total_tokens` | Sum of input + output tokens |
-| `duration_ms` | Total request duration in milliseconds |
+| Stored field | Meaning |
+| --- | --- |
+| `day` | UTC calendar date |
+| `key_hash`, `key_name` | Hashed client key and latest recorded display name |
+| `model`, `backend` | Canonical model name and selected backend |
+| `requests`, `successful`, `errors` | Request count, 2xx count and HTTP >=400 count |
+| `input_tokens`, `output_tokens`, `total_tokens` | Token sums |
+| `request_bytes`, `response_bytes` | Byte sums for CLI reports |
+| `duration_ms` | Sum of request durations, not an average |
+| `last_seen` | Latest request timestamp in the bucket |
 
-### Token extraction
+The dashboard and CLI combine daily buckets for the requested time window.
+Average latency is total duration divided by request count; users and active
+days are counted distinctly rather than summed across buckets. A seven-day
+window includes today and the previous six UTC dates. Model aliases and endpoint
+paths are no longer persisted as request-level metadata.
 
-Tokens are extracted from the upstream response automatically:
+The single writer batches up to 256 requests or ten seconds of work. Dashboard
+and API-key activity queries first flush earlier queued events; normal shutdown
+also drains and flushes them. An abnormal termination can lose the unflushed
+tail. Failed writes remain pending and can be retried. Standalone CLI reports
+read the most recently committed batch.
 
-- **OpenAI backends**: from the `usage` object (`prompt_tokens`, `completion_tokens`, `total_tokens`)
-- **Anthropic backends**: from `usage` in `message_start` and `message_delta` SSE events (includes `cache_creation_input_tokens` and `cache_read_input_tokens` in the input count)
-- **Streaming responses**: scanned from SSE data lines
-- **Responses API (translated)**: extracted from the Chat Completions stream during translation
-- **Responses API (native passthrough)**: token counts are not available (would require buffering the full response); byte counts are still logged
+The database stores daily aggregates only. Existing daily history is retained;
+older dates are not automatically expired.
 
-### Privacy
-
-API keys are never stored. Only the first 16 hex characters of the SHA-256 hash are recorded — enough to identify distinct users but not reversible to the original key.
+API keys are never stored: `key_hash` identifies them without retaining secrets.
+Input/output token counts are extracted from supported JSON/SSE usage payloads.
 
 ## Usage dashboard
 
-The dashboard is a password-protected web UI at `/usage` that visualizes usage data.
+The dashboard is the password-protected Overview page at `/admin/usage`.
+Both `/admin` and the legacy `/usage` URL lead to this page.
 
 ### Enabling the dashboard
 
@@ -72,8 +74,7 @@ The dashboard requires usage logging to be enabled first. Add both settings:
 
 ```yaml
 log_metrics: true
-usage_dashboard: true
-usage_dashboard_password: "a-strong-password"
+admin_password: "a-strong-password"
 ```
 
 Or with CLI flags:
@@ -81,21 +82,27 @@ Or with CLI flags:
 ./go-llm-proxy -config config.yaml -log-metrics -serve-dashboard
 ```
 
-**Note**: `usage_dashboard_password` is always required in the config even when using the CLI flag. The proxy will refuse to start if the dashboard is enabled without a password.
+Set `admin_password` in the config or `GO_LLM_ADMIN_PASSWORD` in the environment.
+The old `usage_dashboard: true` and `usage_dashboard_password` combination still
+works as a fallback. `-serve-dashboard` enables logging for the same console;
+it does not enable a separate login. Without an admin password, admin routes
+return 404.
 
 ### Dashboard endpoints
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/usage` | GET | Cookie | Dashboard page (or login form if not authenticated) |
-| `/usage` | POST | Password | Login form submission |
-| `/usage/data` | GET | Cookie | JSON API for dashboard data |
+| `/admin/usage` | GET | Admin cookie | Overview, or redirect to admin login |
+| `/admin/login` | POST | Password | Unified login form submission |
+| `/admin/usage/data` | GET | Admin cookie | JSON API for dashboard data |
+| `/usage` | GET | — | Redirect to `/admin/usage` |
+| `/usage/data` | GET | — | Redirect to the protected admin data endpoint |
 
 ### Authentication
 
 The dashboard uses a simple password login:
 
-1. Navigate to `/usage`
+1. Navigate to `/admin`
 2. Enter the configured password
 3. A secure HTTP-only cookie is set (30-day expiry, SameSite=Strict, Secure flag on HTTPS)
 
@@ -103,7 +110,7 @@ Failed login attempts are rate-limited per IP using the same throttling as the m
 
 ### Dashboard data
 
-The `/usage/data` endpoint returns JSON with these sections:
+The `/admin/usage/data` endpoint returns JSON with these sections:
 
 | Section | Contents |
 |---|---|
@@ -218,7 +225,7 @@ old rows — if you want to cap disk usage, do it manually. Stop the proxy
 first (SQLite file operations aren't safe against a live writer):
 
 ```bash
-sqlite3 /path/to/usage.db "DELETE FROM usage WHERE timestamp < datetime('now', '-180 days'); VACUUM;"
+sqlite3 /path/to/usage.db "DELETE FROM usage_daily WHERE day < date('now', '-180 days'); VACUUM;"
 ```
 
 `VACUUM` is required after a bulk delete — SQLite doesn't shrink the file on

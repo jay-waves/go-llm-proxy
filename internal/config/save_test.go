@@ -448,7 +448,6 @@ func TestThinkingOffSurvivesUpdateModel(t *testing.T) {
 	fixture := `models:
   - name: m
     backend: http://localhost:8000/v1
-    rewrite_documents: "on"
     thinking_off:
       chat_template_kwargs:
         enable_thinking: false
@@ -470,7 +469,5 @@ func TestThinkingOffSurvivesUpdateModel(t *testing.T) {
 	if kw["enable_thinking"] != false {
 		t.Fatalf("thinking_off lost on update: %#v", m.ThinkingOff)
 	}
-	if m.RewriteDocuments != "on" {
-		t.Fatalf("rewrite_documents lost on update: %q", m.RewriteDocuments)
-	}
+
 }

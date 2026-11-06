@@ -432,8 +432,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// requestTimeout).
 	ctx, cancel, disarmTimeout := armUntilHeaders(r.Context(), model)
 	defer cancel()
-	// One search budget for every round of this request's search loop.
-	ctx = pipeline.WithSearchBudget(ctx, 0)
 
 	// Try native passthrough unless forced to translate.
 	if !h.shouldTranslate(model, "/responses") {
@@ -476,7 +474,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the client from timing out while the vision model describes images.
 	headersAlreadySent := false
 	if h.pipeline != nil && h.pipeline.ShouldProcess(model) {
-		if req.Stream && (pipeline.RequestContainsImageURLs(chatReq) || pipeline.RequestContainsPDFData(chatReq)) {
+		if req.Stream && pipeline.RequestContainsImageURLs(chatReq) {
 			chatReq, headersAlreadySent, err = runPipelineWithKeepalives(ctx, w, h.pipeline, chatReq, model)
 		} else {
 			chatReq, err = h.pipeline.ProcessRequest(ctx, chatReq, model)
@@ -501,7 +499,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// PDFs the pipeline did not consume go upstream as OpenAI `file` parts.
-	downgradePDFData(chatReq)
 	// Per-model sampling defaults; values the client set are kept.
 	model.ApplySamplingDefaults(chatReq)
 
@@ -588,21 +585,6 @@ func (h *ResponsesHandler) handleNonStreaming(w http.ResponseWriter, resp *http.
 	if err := json.Unmarshal(body, &chatResp); err != nil {
 		httputil.WriteError(w, http.StatusBadGateway, "invalid upstream response")
 		return
-	}
-
-	// Search tool loop: if the response calls web_search, execute and re-send.
-	if h.pipeline != nil && len(chatResp.Choices) > 0 && pipeline.HasSearchToolCall(chatResp.Choices[0].Message.ToolCalls) {
-		ctx := resp.Request.Context()
-		finalResp, err := h.pipeline.HandleNonStreamingSearchLoop(ctx, chatReq, model, &chatResp,
-			func(req map[string]any) (*api.ChatResponse, error) {
-				return h.sendChatRequest(ctx, req, model)
-			}, 5)
-		if err != nil {
-			slog.Error("search processing failed", "model", req.Model, "error", err)
-			httputil.WriteError(w, http.StatusBadGateway, "search processing failed")
-			return
-		}
-		chatResp = *finalResp
 	}
 
 	respID := api.RandomID("resp_")

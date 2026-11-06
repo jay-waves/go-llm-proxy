@@ -1,0 +1,10 @@
+<div id="confirmModal" class="modal-backdrop" onclick="if(event.target.id==='confirmModal')closeConfirm()">
+  <div class="modal" style="max-width:440px" role="alertdialog">
+    <div class="modal-header"><h2 id="confirmTitle"></h2><button class="modal-close" type="button" onclick="closeConfirm()">&times;</button></div>
+    <div class="modal-body">
+      <p id="confirmBody" style="font-size:13px;line-height:1.6"></p>
+      <p class="hint" id="confirmActivity" style="margin-top:8px"></p>
+    </div>
+    <div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeConfirm()">Cancel</button><button id="confirmBtn" class="btn btn-danger" type="button"></button></div>
+  </div>
+</div>

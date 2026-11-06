@@ -1,0 +1,102 @@
+<div class="subtabs">
+  <button class="subtab active" id="subtabModels" type="button" onclick="switchLLMTab('models')">Models</button>
+  <button class="subtab" id="subtabHelpers" type="button" onclick="switchLLMTab('helpers')">Helpers</button>
+  <button class="subtab" id="subtabAliasing" type="button" onclick="switchLLMTab('aliasing')">Aliases</button>
+</div>
+<div id="pane-models">
+<div class="card">
+  <div class="card-header">
+    <h2>Models</h2>
+    <div class="card-tools">
+      <input id="modelFilter" class="filter-input" type="search" placeholder="Filter models&hellip;" autocomplete="off">
+      <button class="btn btn-primary" type="button" onclick="openModel(null)">+ Add Model</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Name</th><th style="width:90px">Protocol</th><th>Upstream model</th><th style="width:180px" title="One dot per backend server — click the row for detail">Backends</th><th style="width:110px" title="Native input the model accepts beyond text">Multi-Modal</th><th style="width:130px" title="Intercepts applied by the proxy for this model">Augmented</th><th style="width:130px;text-align:right">Actions</th></tr></thead>
+    <tbody id="modelsBody"><tr><td colspan="7" class="empty-cell">Loading…</td></tr></tbody>
+  </table></div>
+</div>
+<div class="card" id="connectCard" style="display:none">
+  <div class="card-header"><h2>Connected services</h2><span class="hint" id="connectHub"></span></div>
+  
+  <div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Site</th><th style="width:90px">Online</th><th>Service</th><th>Models</th><th style="width:90px">Healthy</th></tr></thead>
+    <tbody id="connectBody"><tr><td colspan="5" class="empty-cell">Loading…</td></tr></tbody>
+  </table></div>
+</div>
+
+</div>
+<div id="pane-helpers" style="display:none">
+<div class="card">
+  <h2>Vision</h2>
+  
+  <div id="visionCascade" class="cascade-list"></div>
+  <div class="cascade-add"><select id="visionAddSelect"></select><button type="button" class="btn btn-secondary btn-sm" onclick="addVisionModel()">+ Add</button></div>
+</div>
+<div class="btn-row"><button class="btn btn-primary" type="button" onclick="saveHelpers()">Save helpers</button></div>
+<div class="card" style="margin-top:18px">
+  <h2>Claude Code auto mode</h2>
+  
+  <div class="field-grid">
+    <div class="field"><label>Decision model</label><select id="autoModeModel"></select></div>
+    <div class="field"><label title="Actions whose block probability is at or above this are blocked. Default 0.5.">Block probability</label><input id="autoModeThreshold" type="number" min="0.01" max="1" step="0.05" placeholder="0.5"></div>
+  </div>
+  <div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" type="button" onclick="saveAutoMode()">Save auto mode</button></div>
+</div>
+</div>
+<div id="pane-aliasing" style="display:none">
+<div class="card">
+  <h2>Aliases &amp; unrecognized requests</h2>
+  
+  <h3>Unrecognized requests</h3>
+  <div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Model ID</th><th style="width:80px">Count</th><th style="width:180px">Last seen</th><th style="width:150px">Endpoint</th><th style="width:190px">Last requester</th><th style="width:290px">Alias to</th></tr></thead>
+    <tbody id="unknownModelsBody"><tr><td colspan="6" class="empty-cell">Loading…</td></tr></tbody>
+  </table></div>
+  <h3 style="margin-top:18px">Configured aliases</h3>
+  <div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Alias</th><th>Target model</th><th style="width:100px;text-align:right">Actions</th></tr></thead>
+    <tbody id="aliasesBody"><tr><td colspan="3" class="empty-cell">Loading…</td></tr></tbody>
+  </table></div>
+</div>
+</div><div id="modelModal" class="modal-backdrop" onclick="if(event.target.id==='modelModal')closeModel()">
+  <div class="modal" style="max-width:920px;width:calc(100vw - 32px)" role="dialog">
+    <div class="modal-header"><h2 id="modelTitle">Model</h2><button class="modal-close" onclick="closeModel()" type="button">&times;</button></div>
+    <form id="modelForm" onsubmit="saveModel(event)"><div class="modal-body">
+      <div class="section"><h3>Model</h3><div class="field-grid">
+        <div class="field"><label title="The model name clients send in their requests, e.g. &quot;model&quot;: &quot;glm-5.2&quot;. This is what the proxy publishes &mdash; it can differ from the upstream model ID set below with the backends.">Published model ID</label><input name="name" type="text" required placeholder="GLM-5.2"></div>
+        <div class="field"><label title="How long the proxy waits for the backend to respond before giving up.">Timeout (seconds)</label><input name="timeout" type="number" min="1" placeholder="300"></div>
+        <div class="field"><label title="Max input+output tokens the model supports. Shown to clients and used for capacity checks; leave blank to auto-detect where possible.">Context window</label><div class="secret-row"><input name="context_window" type="number" min="0" placeholder="auto-detect" style="flex:1"><button type="button" class="btn btn-secondary btn-sm" onclick="detectContextWindow(this)">Detect</button></div><div class="hint" id="ctxDetectStatus" style="display:none;margin-top:4px"></div></div>
+        <div class="field"><label title="How Responses API requests are handled. Auto detects backend support, Native always passes through, and Translate always uses Chat Completions so proxy processors remain available.">Responses API</label><select name="responses_mode"><option value="">Auto</option><option value="native">Native passthrough</option><option value="translate">Translate to Chat Completions</option></select></div>
+        <div class="field">
+          <div class="grid-3">
+            <div class="field"><label title="Images are described by the vision helper cascade before reaching this model, instead of being forwarded as-is.">Vision</label><select name="rewrite_vision" id="rewriteVisionSelect"><option value="">Auto</option><option value="on">Rewrite</option><option value="off">None</option></select></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="section">
+        <h3 style="margin-bottom:6px">Backends</h3>
+        <div class="field-grid" style="margin-bottom:12px">
+          <div class="field"><label title="The model name sent to every backend below (leave blank to reuse the published model ID), and the API shape they all speak. All backends in this pool must serve the same upstream model.">Upstream model ID</label><div class="secret-row"><input name="model" type="text" placeholder="same as published model ID" style="flex:1"><select name="type" onchange="toggleBedrock()" style="max-width:140px" title="Upstream protocol"><option value="">OpenAI</option><option value="anthropic">Anthropic</option><option value="bedrock">Bedrock</option></select></div></div>
+          <div class="field checkbox-row"><input id="supportsVision" name="supports_vision" type="checkbox" onchange="updateAutoHints()"><label for="supportsVision">Vision capable</label></div>
+          <div class="field checkbox-row"><input id="codeLink" name="code_link" type="checkbox"><label for="codeLink" title="List this model in code-link's launch window (via GET /v1/capabilities). Keys still need permission to use it.">Offer in code-link</label></div>
+        </div>
+        <div class="be-head"><span></span><span>Server URL</span><span>API key</span><span title="Load-balancing weight — higher gets more traffic relative to other backends">Wt</span><span title="Max concurrent requests to this backend (0 = unlimited)">Max</span><span title="Temporarily disabled — kept in the list but never routed to">Off</span><span></span></div>
+        <div id="backendRows"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:2px"><button type="button" class="btn btn-secondary btn-sm" onclick="addBackend(null)">+ Add Backend</button></div>
+      </div>
+      <div class="section"><h3>Sampling defaults</h3><div class="grid-4">
+        <div class="field"><label title="Higher = more random/creative output, lower = more focused and deterministic. Leave blank to use the backend's own default.">Temperature</label><input name="temperature" type="number" step="0.05" min="0" max="2" placeholder="backend default"></div>
+        <div class="field"><label title="Nucleus sampling: only considers tokens within this cumulative probability mass. Leave blank to use the backend's own default.">Top-p</label><input name="top_p" type="number" step="0.05" min="0" max="1" placeholder="backend default"></div>
+        <div class="field"><label title="Only considers the k most likely next tokens at each step. Leave blank to use the backend's own default.">Top-k</label><input name="top_k" type="number" min="0" placeholder="backend default"></div>
+        <div class="field"><label title="Requested thinking depth for reasoning-capable models. Accepted values are backend-specific.">Reasoning effort</label><select name="reasoning_effort"><option value="">Backend default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></div>
+      </div></div>
+      <div id="bedrockFields" class="section" style="display:none"><h3>Bedrock</h3><div class="field-grid">
+        <div class="field"><label title="AWS region hosting this Bedrock model, e.g. us-east-1.">Region</label><input name="region" type="text" placeholder="us-east-1"></div><div class="field"><label title="IAM access key with bedrock:InvokeModel permission for this model.">AWS access key ID</label><input name="aws_access_key" type="text"></div>
+        <div class="field"><label>AWS secret key</label><input name="aws_secret_key" type="password" placeholder="leave blank to keep"></div><div class="field"><label title="Only needed for temporary/STS credentials, not long-lived IAM keys.">Session token</label><input name="aws_session_token" type="password" placeholder="leave blank to keep"></div>
+      </div></div>
+      <div id="modelErr" class="inline-err" style="display:none"></div>
+    </div><div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="closeModel()">Cancel</button><button id="modelSave" class="btn btn-primary">Save model</button></div></form>
+  </div>
+</div>

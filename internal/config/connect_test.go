@@ -8,46 +8,12 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
+
 	"testing"
 	"time"
 
 	"go-llm-proxy/internal/httputil"
 )
-
-func TestValidateConfig_ConnectBackends(t *testing.T) {
-	cfg := validConfig()
-	cfg.Models[0].Backend = "connect://site-a/glm/v1"
-	cfg.Audio.Whisper = &AudioModelConfig{Name: "whisper", Timeout: 60,
-		Backends: []BackendConfig{{URL: "connect://site-a/whisper"}}}
-	cfg.Documents.PaddleOCR = &PaddleOCRConfig{Endpoint: "/layout-parsing", HealthEndpoint: "/health", Timeout: 60,
-		Backends: []BackendConfig{{URL: "connect://site-a/ocr"}}}
-	cfg.Services.Qdrant = &QdrantConfig{Backend: "connect://site-a/qdrant",
-		AppKeys: []AppKeyConfig{{Name: "app", Key: "k"}}}
-	cfg.Connect = &ConnectConfig{URL: "http://connect.example.com:8080", Application: "x"}
-	if err := validateConfig(cfg); err != nil {
-		t.Fatalf("connect backends should validate: %v", err)
-	}
-
-	for _, bad := range []string{"connect://site-a", "connect:///glm", "connect://u:p@site-a/glm", "ftp://x/y"} {
-		c := validConfig()
-		c.Models[0].Backend = bad
-		if err := validateConfig(c); err == nil {
-			t.Errorf("backend %q should be rejected", bad)
-		}
-	}
-
-	c := validConfig()
-	c.Services.Qdrant = &QdrantConfig{Backend: "connect://site-a"}
-	if err := validateConfig(c); err == nil {
-		t.Error("qdrant connect URL without service should be rejected")
-	}
-	c = validConfig()
-	c.Connect = &ConnectConfig{URL: "connect://nope/x"}
-	if err := validateConfig(c); err == nil {
-		t.Error("connect.url must be http(s)")
-	}
-}
 
 func TestConnectSettingsDefaults(t *testing.T) {
 	url, app := (&Config{}).ConnectSettings()
@@ -259,36 +225,6 @@ func TestConnectCatalogPollingLoop(t *testing.T) {
 	fh.mu.Unlock()
 	if n < 3 {
 		t.Fatalf("catalog should be re-polled on its own ticker, saw %d requests", n)
-	}
-}
-
-func TestDisabledBackendsNotProbed(t *testing.T) {
-	var hits atomic.Int64
-	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
-	defer live.Close()
-	var disabledHits atomic.Int64
-	drained := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { disabledHits.Add(1) }))
-	defer drained.Close()
-
-	cs := NewTestConfigStore(&Config{
-		Models: []ModelConfig{{Name: "m", Timeout: 300, Backends: []BackendConfig{
-			{URL: live.URL}, {URL: drained.URL, Disabled: true}}}},
-		Audio:     AudioConfig{Whisper: &AudioModelConfig{Name: "w", Timeout: 60, Backends: []BackendConfig{{URL: drained.URL + "/w", Disabled: true}}}},
-		Documents: DocumentsConfig{PaddleOCR: &PaddleOCRConfig{Timeout: 60, Backends: []BackendConfig{{URL: drained.URL + "/o", Disabled: true}}}},
-	})
-	hs := NewHealthStore(cs, time.Hour, 2*time.Second)
-	hs.RecheckAll()
-	hs.wg.Wait()
-	hs.checkAll(context.Background(), hs.newClient())
-	hs.wg.Wait()
-	if hits.Load() == 0 {
-		t.Fatal("enabled backend should be probed")
-	}
-	if disabledHits.Load() != 0 {
-		t.Fatalf("disabled backends were probed %d times", disabledHits.Load())
-	}
-	if _, ok := hs.GetBackendStatus()[drained.URL]; ok {
-		t.Fatal("disabled backend should have no probe result")
 	}
 }
 
